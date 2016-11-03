@@ -75,7 +75,7 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 		return nil
 	}
 	// If target user has been substribed by this user, reply directly.
-	err = ts.libstore.AppendToList(id, args.TargetUserID)
+	err = ts.libstore.AppendToList(util.FormatSubListKey(args.UserID), args.TargetUserID)
 	if err != nil {
 		reply.Status = tribrpc.Exists
 		return nil
@@ -100,8 +100,9 @@ func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *
 		return nil
 	}
 	// If target user is not substribed by this user, reply directly.
-	err = ts.libstore.RemoveFromList(id, args.TargetUserID)
+	err = ts.libstore.RemoveFromList(util.FormatSubListKey(args.UserID), args.TargetUserID)
 	if err != nil {
+		fmt.Println("Target user", args.TargetUserID, "is not subscribed by this user", args.UserID)
 		reply.Status = tribrpc.NoSuchTargetUser
 		return nil
 	}
@@ -117,7 +118,7 @@ func (ts *tribServer) GetFriends(args *tribrpc.GetFriendsArgs, reply *tribrpc.Ge
 		reply.Status = tribrpc.NoSuchUser
 		return nil
 	}
-	list, err := ts.libstore.GetList(id)
+	list, err := ts.libstore.GetList(util.FormatSubListKey(args.UserID))
 	if err != nil {
 		fmt.Println("Fail to get friend list of a user: ", id)
 		return nil
@@ -154,7 +155,7 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 	if err != nil {
 		fmt.Println("Marshal error inside post tribble.")
 	}
-	err = ts.libstore.Put(id, string(marshalledTribble))
+	err = ts.libstore.Put(postID, string(marshalledTribble))
 	if err != nil {
 		fmt.Println("Fail to put marshalled tribble into libstore.")
 		return nil
@@ -188,7 +189,7 @@ func (ts *tribServer) DeleteTribble(args *tribrpc.DeleteTribbleArgs, reply *trib
 	// Delete post entry.
 	ts.libstore.Delete(args.PostKey)
 	// Delete post from user post list.
-	err = ts.libstore.RemoveFromList(id, args.PostKey)
+	err = ts.libstore.RemoveFromList(util.FormatTribListKey(args.UserID), args.PostKey)
 	if err != nil {
 		fmt.Println("Fail to remove tribble", args.PostKey, "from user post list")
 		return nil
@@ -205,7 +206,7 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 		reply.Status = tribrpc.NoSuchUser
 		return nil
 	}
-	tribbleList, err := ts.libstore.GetList(id)
+	tribbleList, err := ts.libstore.GetList(util.FormatTribListKey(args.UserID))
 	if err != nil {
 		fmt.Println("Fail to get tribble list of user", id)
 		return nil
@@ -235,12 +236,6 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 
 func (ts *tribServer) GetTopTribbleByUserID(userID string) []tribrpc.Tribble {
 	id := util.FormatTribListKey(userID)
-	_, err := ts.libstore.Get(id)
-	// If this user does not exist, reply directly.
-	if err != nil {
-		fmt.Println("Fail to get top tribbles by userID because of tribListKey error", userID)
-		return nil
-	}
 	tribList, err := ts.libstore.GetList(id)
 	if err != nil {
 		fmt.Println("Fail to get top tribbles by userID", userID)
