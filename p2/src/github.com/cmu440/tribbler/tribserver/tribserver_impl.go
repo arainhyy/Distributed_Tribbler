@@ -136,12 +136,12 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 		reply.Status = tribrpc.NoSuchUser
 		return nil
 	}
-	timestamp := time.Now().UnixNano()
+	timestamp := time.Now().UTC().UnixNano()
 	postID := util.FormatPostKey(args.UserID, timestamp)
 	_, err = ts.libstore.Get(postID)
 	// If postID has existed, keey trying with new timestamp to create new postID.
 	for err == nil {
-		timestamp = time.Now().UnixNano()
+		timestamp = time.Now().UTC().UnixNano()
 		postID = util.FormatPostKey(args.UserID, timestamp)
 		_, err = ts.libstore.Get(postID)
 	}
@@ -208,6 +208,7 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	}
 	tribbleList, err := ts.libstore.GetList(util.FormatTribListKey(args.UserID))
 	if err != nil {
+		reply.Status = tribrpc.OK
 		fmt.Println("Fail to get tribble list of user", id)
 		return nil
 	}
