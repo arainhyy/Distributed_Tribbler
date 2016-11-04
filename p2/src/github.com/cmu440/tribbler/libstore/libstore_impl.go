@@ -5,7 +5,7 @@ import (
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 	"net/rpc"
-	"github.com/cmu440/tribbler/rpc/librpc"
+	//"github.com/cmu440/tribbler/rpc/librpc"
 )
 
 type libstore struct {
@@ -49,44 +49,55 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	libstore.myHostPort = myHostPort
 	libstore.masterServerHostPort = masterServerHostPort
 	libstore.mode = mode
-	rpc.RegisterName("LeaseCallbacks", librpc.Wrap(&libstore)) // useless in this checkpoint
+	//lib := new(librpc.RemoteLeaseCallbacks)
+	//rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore)) // useless in this checkpoint
 	return &libstore, nil
 }
 
 func (ls *libstore) Get(key string) (string, error) {
 	args := &storagerpc.GetArgs{Key:key, WantLease:false}
 	var reply storagerpc.GetReply
-	if err := ls.client.Call("Get", args, &reply); err != nil {
+	if err := ls.client.Call("StorageServer.Get", args, &reply); err != nil {
 		return "", err
+	} else if reply.Status == storagerpc.KeyNotFound {
+		return "", errors.New("GET operation failed with KeyNotFound")
+	} else {
+		return reply.Value, nil
 	}
-	return reply.Value, nil
 }
 
 func (ls *libstore) Put(key, value string) error {
 	args := &storagerpc.PutArgs{Key:key, Value:value}
 	var reply storagerpc.PutReply
-	if err := ls.client.Call("Put", args, &reply); err != nil {
+	if err := ls.client.Call("StorageServer.Put", args, &reply); err != nil {
 		return err
+	} else {
+		return nil
 	}
-	return nil
 }
 
 func (ls *libstore) Delete(key string) error {
 	args := &storagerpc.DeleteArgs{Key:key}
 	var reply storagerpc.DeleteReply
-	if err := ls.client.Call("Delete", args, &reply); err != nil {
+	if err := ls.client.Call("StorageServer.Delete", args, &reply); err != nil {
 		return err
+	} else if reply.Status == storagerpc.KeyNotFound {
+		return errors.New("Delete operation failed with KeyNotFound")
+	} else {
+		return nil
 	}
-	return nil
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
 	args := &storagerpc.GetArgs{Key:key}
 	var reply storagerpc.GetListReply
-	if err := ls.client.Call("GetList", args, &reply); err != nil {
+	if err := ls.client.Call("StorageServer.GetList", args, &reply); err != nil {
 		return nil, err
+	} else if reply.Status == storagerpc.KeyNotFound {
+		return nil, errors.New("GetList operation failed with KeyNotFound")
+	} else {
+		return reply.Value, nil
 	}
-	return reply.Value, nil
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
@@ -94,20 +105,32 @@ func (ls *libstore) RemoveFromList(key, removeItem string) error {
 	args := &storagerpc.PutArgs{Key:key, Value:removeItem}
 	var reply storagerpc.PutReply
 
-	if err := ls.client.Call("RemoveFromList", args, &reply); err != nil {
+	if err := ls.client.Call("StorageServer.RemoveFromList", args, &reply); err != nil {
 		return err
+	} else if reply.Status == storagerpc.KeyNotFound {
+		return errors.New("RemoveFromList operation failed with KeyNotFound")
+	} else if reply.Status == storagerpc.ItemNotFound {
+		return errors.New("RemoveFromList operation failed with ItemNotFound")
+	} else {
+		return nil
 	}
-	return nil
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
 	args := &storagerpc.PutArgs{Key:key, Value:newItem}
 	var reply storagerpc.PutReply
 
-	if err := ls.client.Call("AppendToList", args, &reply); err != nil {
+	if err := ls.client.Call("StorageServer.AppendToList", args, &reply); err != nil {
 		return err
+	} else if reply.Status == storagerpc.KeyNotFound {
+		return errors.New("AppendToList operation failed with KeyNotFound")
+	} else if reply.Status == storagerpc.ItemNotFound {
+		return errors.New("AppendToList operation failed with ItemNotFound")
+	} else if reply.Status == storagerpc.ItemExists {
+		return errors.New("AppendToList operation failed with ItemExists")
+	} else {
+		return nil
 	}
-	return nil
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {

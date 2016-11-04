@@ -7,7 +7,8 @@ import (
 	"net"
 	"net/rpc"
 	"net/http"
-	"strconv"
+	//"strconv"
+	"fmt"
 )
 
 type storageServer struct {
@@ -46,12 +47,14 @@ type storageServer struct {
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
-	newStorageServer := storageServer{}
+	newStorageServer := new(storageServer)
 
 	newStorageServer.clients = make(map[string]string)
 	newStorageServer.tribblers = make(map[string]*list.List)
 	newStorageServer.delete = make(chan *storagerpc.DeleteArgs, 1000)
 	newStorageServer.deleteReturn = make(chan *storagerpc.DeleteReply, 1000)
+	newStorageServer.deleteList = make(chan *storagerpc.PutArgs, 1000)
+	newStorageServer.deleteListReturn = make(chan *storagerpc.PutReply, 1000)
 
 	newStorageServer.getRequest = make(chan *storagerpc.GetArgs, 1000)
 	newStorageServer.getListRequest = make(chan *storagerpc.GetArgs, 1000)
@@ -67,16 +70,20 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	newStorageServer.masterServerHostPort = masterServerHostPort
 	newStorageServer.numNodes = numNodes
 
-	listener, err := net.Listen("tcp", "localhost:" + strconv.Itoa(port))
-	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(&newStorageServer))
+
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return nil, errors.New("Fail to listen.")
+	}
+	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(newStorageServer))
 	if err != nil {
 		return nil, errors.New("Fail to register storageServer.")
 	}
 	rpc.HandleHTTP()
 	go http.Serve(listener, nil)
 
-	go storageServerRoutine(&newStorageServer)
-	return &newStorageServer, nil
+	go storageServerRoutine(newStorageServer)
+	return newStorageServer, nil
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
@@ -113,7 +120,6 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 }
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-
 	ss.put <- args
 	replyTmp := <-ss.putReturn
 	reply.Status = replyTmp.Status
@@ -174,7 +180,7 @@ func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs) {
 func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs) {
 	if _, ok := ss.tribblers[request.Key]; !ok {
 		re := storagerpc.PutReply{Status: storagerpc.KeyNotFound}
-		ss.putReturn <- &re
+		ss.putListReturn <- &re
 		return
 	}
 	flag := false
@@ -186,7 +192,7 @@ func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs) {
 	}
 	if flag {
 		re := storagerpc.PutReply{Status: storagerpc.ItemExists}
-		ss.putReturn <- &re
+		ss.putListReturn <- &re
 		return
 	}
 	ss.tribblers[request.Key].PushFront(request.Value)
@@ -237,12 +243,12 @@ func deleteRequestFunc(ss *storageServer, deleteRequest *storagerpc.DeleteArgs) 
 func deleteListRequestFunc(ss *storageServer, deleteListRequest *storagerpc.PutArgs) {
 	if _, ok := ss.tribblers[deleteListRequest.Key]; !ok {
 		re := storagerpc.PutReply{Status: storagerpc.KeyNotFound}
-		ss.putReturn <- &re
+		ss.deleteListReturn <- &re
 		return
 	}
 	flag := false
 	for e := ss.tribblers[deleteListRequest.Key].Front(); e != nil; e = e.Next() {
-		if e.Value.(string) == deleteListRequest.Value {
+		if e.Value == deleteListRequest.Value {
 			flag = true
 			ss.tribblers[deleteListRequest.Key].Remove(e)
 			break
@@ -250,10 +256,10 @@ func deleteListRequestFunc(ss *storageServer, deleteListRequest *storagerpc.PutA
 	}
 	if !flag {
 		re := storagerpc.PutReply{Status: storagerpc.ItemNotFound}
-		ss.putReturn <- &re
+		ss.deleteListReturn <- &re
 		return
 	} else {
 		re := storagerpc.PutReply{Status: storagerpc.OK}
-		ss.putReturn <- &re
+		ss.deleteListReturn <- &re
 	}
 }
