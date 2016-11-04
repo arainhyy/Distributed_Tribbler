@@ -4,10 +4,15 @@ import (
 	"errors"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
+	"net/rpc"
+	//"github.com/cmu440/tribbler/rpc/librpc"
 )
 
 type libstore struct {
-	// TODO: implement this!
+	myHostPort           string
+	masterServerHostPort string
+	mode                 LeaseMode
+	client               *rpc.Client
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -35,31 +40,97 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-	return nil, errors.New("not implemented")
+
+	cli, err := rpc.DialHTTP("tcp", masterServerHostPort)
+	if err != nil {
+		return nil, errors.New("fail to Dail HTTP")
+	}
+	libstore := libstore{client: cli}
+	libstore.myHostPort = myHostPort
+	libstore.masterServerHostPort = masterServerHostPort
+	libstore.mode = mode
+	//lib := new(librpc.RemoteLeaseCallbacks)
+	//rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore)) // useless in this checkpoint
+	return &libstore, nil
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-	return "", errors.New("not implemented")
+	args := &storagerpc.GetArgs{Key:key, WantLease:false}
+	var reply storagerpc.GetReply
+	if err := ls.client.Call("StorageServer.Get", args, &reply); err != nil {
+		return "", err
+	} else if reply.Status == storagerpc.KeyNotFound {
+		return "", errors.New("GET operation failed with KeyNotFound")
+	} else {
+		return reply.Value, nil
+	}
 }
 
 func (ls *libstore) Put(key, value string) error {
-	return errors.New("not implemented")
+	args := &storagerpc.PutArgs{Key:key, Value:value}
+	var reply storagerpc.PutReply
+	if err := ls.client.Call("StorageServer.Put", args, &reply); err != nil {
+		return err
+	} else {
+		return nil
+	}
 }
 
 func (ls *libstore) Delete(key string) error {
-	return errors.New("not implemented")
+	args := &storagerpc.DeleteArgs{Key:key}
+	var reply storagerpc.DeleteReply
+	if err := ls.client.Call("StorageServer.Delete", args, &reply); err != nil {
+		return err
+	} else if reply.Status == storagerpc.KeyNotFound {
+		return errors.New("Delete operation failed with KeyNotFound")
+	} else {
+		return nil
+	}
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-	return nil, errors.New("not implemented")
+	args := &storagerpc.GetArgs{Key:key}
+	var reply storagerpc.GetListReply
+	if err := ls.client.Call("StorageServer.GetList", args, &reply); err != nil {
+		return nil, err
+	} else if reply.Status == storagerpc.KeyNotFound {
+		return nil, errors.New("GetList operation failed with KeyNotFound")
+	} else {
+		return reply.Value, nil
+	}
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
-	return errors.New("not implemented")
+
+	args := &storagerpc.PutArgs{Key:key, Value:removeItem}
+	var reply storagerpc.PutReply
+
+	if err := ls.client.Call("StorageServer.RemoveFromList", args, &reply); err != nil {
+		return err
+	} else if reply.Status == storagerpc.KeyNotFound {
+		return errors.New("RemoveFromList operation failed with KeyNotFound")
+	} else if reply.Status == storagerpc.ItemNotFound {
+		return errors.New("RemoveFromList operation failed with ItemNotFound")
+	} else {
+		return nil
+	}
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-	return errors.New("not implemented")
+	args := &storagerpc.PutArgs{Key:key, Value:newItem}
+	var reply storagerpc.PutReply
+
+	if err := ls.client.Call("StorageServer.AppendToList", args, &reply); err != nil {
+		return err
+	} else if reply.Status == storagerpc.KeyNotFound {
+		return errors.New("AppendToList operation failed with KeyNotFound")
+	} else if reply.Status == storagerpc.ItemNotFound {
+		return errors.New("AppendToList operation failed with ItemNotFound")
+	} else if reply.Status == storagerpc.ItemExists {
+		return errors.New("AppendToList operation failed with ItemExists")
+	} else {
+		return nil
+	}
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
