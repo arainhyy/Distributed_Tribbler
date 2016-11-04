@@ -5,7 +5,6 @@ import (
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 	"net/rpc"
-	"strings"
 	"github.com/cmu440/tribbler/rpc/librpc"
 )
 
@@ -50,7 +49,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	libstore.myHostPort = myHostPort
 	libstore.masterServerHostPort = masterServerHostPort
 	libstore.mode = mode
-	rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore)) // useless in this checkpoint
+	rpc.RegisterName("LeaseCallbacks", librpc.Wrap(&libstore)) // useless in this checkpoint
 	return &libstore, nil
 }
 
@@ -87,8 +86,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	if err := ls.client.Call("GetList", args, &reply); err != nil {
 		return nil, err
 	}
-	str := strings.Split(reply.Value, "*")
-	return str, nil
+	return reply.Value, nil
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {

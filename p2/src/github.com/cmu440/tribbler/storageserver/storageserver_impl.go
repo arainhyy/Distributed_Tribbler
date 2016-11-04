@@ -49,7 +49,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	newStorageServer := storageServer{}
 
 	newStorageServer.clients = make(map[string]string)
-	newStorageServer.tribblers = make(map[string]list)
+	newStorageServer.tribblers = make(map[string]*list.List)
 	newStorageServer.delete = make(chan *storagerpc.DeleteArgs, 1000)
 	newStorageServer.deleteReturn = make(chan *storagerpc.DeleteReply, 1000)
 
@@ -58,7 +58,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	newStorageServer.getReturn = make(chan *storagerpc.GetReply, 1000)
 	newStorageServer.getListReturn = make(chan *storagerpc.GetListReply, 1000)
 
-	newStorageServer.put = make(chan string, 1000)
+	newStorageServer.put = make(chan *storagerpc.PutArgs, 1000)
 	newStorageServer.putList = make(chan *storagerpc.PutArgs, 1000)
 	newStorageServer.putReturn = make(chan *storagerpc.PutReply, 1000)
 	newStorageServer.putListReturn = make(chan *storagerpc.PutReply, 1000)
@@ -68,15 +68,15 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	newStorageServer.numNodes = numNodes
 
 	listener, err := net.Listen("tcp", "localhost:" + strconv.Itoa(port))
-	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(newStorageServer))
+	err = rpc.RegisterName("StorageServer", storagerpc.Wrap(&newStorageServer))
 	if err != nil {
 		return nil, errors.New("Fail to register storageServer.")
 	}
 	rpc.HandleHTTP()
 	go http.Serve(listener, nil)
 
-	go storageServerRoutine(*newStorageServer)
-	return newStorageServer, nil
+	go storageServerRoutine(&newStorageServer)
+	return &newStorageServer, nil
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
@@ -136,7 +136,7 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 	return nil
 }
 
-func storageServerRoutine(ss storageServer) {
+func storageServerRoutine(ss *storageServer) {
 	for {
 		select {
 		case putRequest := <-ss.put:
@@ -161,20 +161,20 @@ func storageServerRoutine(ss storageServer) {
 	}
 }
 
-func putRequestFunc(ss storageServer, putRequest *storagerpc.PutArgs) {
+func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs) {
 	ss.clients[putRequest.Key] = putRequest.Value
 	re := storagerpc.PutReply{Status: storagerpc.OK}
 
 	if _, ok := ss.tribblers[putRequest.Key]; !ok {
 		ss.tribblers[putRequest.Key] = list.New()
 	}
-	ss.putReturn <- *re
+	ss.putReturn <- &re
 }
 
-func putListRequestFunc(ss storageServer, request *storagerpc.PutArgs) {
+func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs) {
 	if _, ok := ss.tribblers[request.Key]; !ok {
 		re := storagerpc.PutReply{Status: storagerpc.KeyNotFound}
-		ss.putReturn <- *re
+		ss.putReturn <- &re
 		return
 	}
 	flag := false
@@ -186,74 +186,74 @@ func putListRequestFunc(ss storageServer, request *storagerpc.PutArgs) {
 	}
 	if flag {
 		re := storagerpc.PutReply{Status: storagerpc.ItemExists}
-		ss.putReturn <- *re
+		ss.putReturn <- &re
 		return
 	}
 	ss.tribblers[request.Key].PushFront(request.Value)
 	re := storagerpc.PutReply{Status: storagerpc.OK}
-	ss.putListReturn <- *re
+	ss.putListReturn <- &re
 }
 
-func getRequestFunc(ss storageServer, request *storagerpc.PutArgs) {
+func getRequestFunc(ss *storageServer, request *storagerpc.GetArgs) {
 	if _, ok := ss.clients[request.Key]; !ok {
 		re := storagerpc.GetReply{Status: storagerpc.KeyNotFound}
-		ss.getReturn <- re
+		ss.getReturn <- &re
 		return
 	}
 	re := storagerpc.GetReply{Status: storagerpc.OK}
 	re.Value = ss.clients[request.Key]
-	ss.getReturn <- re
+	ss.getReturn <- &re
 }
 
-func getListRequestFunc(ss storageServer, request *storagerpc.PutArgs) {
+func getListRequestFunc(ss *storageServer, request *storagerpc.GetArgs) {
 	if _, ok := ss.tribblers[request.Key]; !ok {
 		re := storagerpc.GetListReply{Status: storagerpc.KeyNotFound}
-		ss.getReturn <- re
+		ss.getListReturn <- &re
 		return
 	}
-	re := storagerpc.GetReply{Status: storagerpc.OK}
+	re := storagerpc.GetListReply{Status: storagerpc.OK}
 
-	var str string
-	i := 0
+	var str []string
+
 	for e := ss.tribblers[request.Key].Front(); e != nil; e = e.Next() {
-		if i != 0 {
-			str += "*"
-		}
-		str += e.Value
-		i ++
-		if i == 100 {
-			break
-		}
+		str = append(str, e.Value.(string))
 	}
 	re.Value = str
-	ss.getListReturn <- re
+	ss.getListReturn <- &re
 }
 
-func deleteRequestFunc(ss storageServer, deleteRequest *storagerpc.DeleteArgs) {
+func deleteRequestFunc(ss *storageServer, deleteRequest *storagerpc.DeleteArgs) {
 	if _, ok := ss.clients[deleteRequest.Key]; !ok {
 		re := storagerpc.DeleteReply{Status: storagerpc.KeyNotFound}
-		ss.putReturn <- *re
+		ss.deleteReturn <- &re
 		return
 	}
 	delete(ss.clients, deleteRequest.Key)
 	delete(ss.tribblers, deleteRequest.Key)
 	re := storagerpc.DeleteReply{Status: storagerpc.OK}
-	ss.putReturn <- *re
+	ss.deleteReturn <- &re
 }
 
-func deleteListRequestFunc(ss storageServer, deleteListRequest *storagerpc.PutArgs) {
+func deleteListRequestFunc(ss *storageServer, deleteListRequest *storagerpc.PutArgs) {
 	if _, ok := ss.tribblers[deleteListRequest.Key]; !ok {
 		re := storagerpc.PutReply{Status: storagerpc.KeyNotFound}
-		ss.putReturn <- *re
+		ss.putReturn <- &re
 		return
 	}
-	tmp := ss.tribblers[deleteListRequest.Key].Remove(deleteListRequest.Value)
-	if len(tmp) == 0 {
+	flag := false
+	for e := ss.tribblers[deleteListRequest.Key].Front(); e != nil; e = e.Next() {
+		if e.Value.(string) == deleteListRequest.Value {
+			flag = true
+			ss.tribblers[deleteListRequest.Key].Remove(e)
+			break
+		}
+	}
+	if !flag {
 		re := storagerpc.PutReply{Status: storagerpc.ItemNotFound}
-		ss.putReturn <- *re
+		ss.putReturn <- &re
 		return
 	} else {
 		re := storagerpc.PutReply{Status: storagerpc.OK}
-		ss.putReturn <- *re
+		ss.putReturn <- &re
 	}
 }
