@@ -69,11 +69,17 @@ func (ls *libstore) Get(key string) (string, error) {
 func (ls *libstore) Put(key, value string) error {
 	args := &storagerpc.PutArgs{Key:key, Value:value}
 	var reply storagerpc.PutReply
-	if err := ls.client.Call("StorageServer.Put", args, &reply); err != nil {
+	err := ls.client.Call("StorageServer.Put", args, &reply)
+	if err != nil {
 		return err
+	} else if reply.Status == storagerpc.KeyNotFound{
+		return errors.New("PUT operation failed with KeyNotFound")
+	} else if reply.Status == storagerpc.WrongServer{
+		return errors.New("PUT operation failed with WrongServer")
 	} else {
 		return nil
 	}
+
 }
 
 func (ls *libstore) Delete(key string) error {
@@ -83,6 +89,8 @@ func (ls *libstore) Delete(key string) error {
 		return err
 	} else if reply.Status == storagerpc.KeyNotFound {
 		return errors.New("Delete operation failed with KeyNotFound")
+	} else if reply.Status == storagerpc.WrongServer{
+		return errors.New("Delete operation failed with WrongServer")
 	} else {
 		return nil
 	}
@@ -95,6 +103,10 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 		return nil, err
 	} else if reply.Status == storagerpc.KeyNotFound {
 		return nil, errors.New("GetList operation failed with KeyNotFound")
+	} else if reply.Status == storagerpc.WrongServer{
+		return nil, errors.New("GetList operation failed with WrongServer")
+	} else if reply.Status == storagerpc.ItemNotFound{
+		return nil, errors.New("GetList operation failed with ItemNotFound")
 	} else {
 		return reply.Value, nil
 	}

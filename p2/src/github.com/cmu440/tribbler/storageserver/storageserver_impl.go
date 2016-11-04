@@ -9,12 +9,22 @@ import (
 	"net/http"
 	//"strconv"
 	"fmt"
+	"time"
 )
 
 type storageServer struct {
 	nodeID               uint32
-	masterServerHostPort string
 	numNodes             int
+	nodes                []storagerpc.Node
+	nodeIndex            int
+	masterServerHostPort string
+	port                 int
+
+	addSlave             chan *storagerpc.RegisterArgs
+	addSlaveReturn       chan *storagerpc.RegisterReply
+
+	getServers           chan *storagerpc.GetServersArgs
+	getServersReturn     chan *storagerpc.GetServersReply
 
 	clients              map[string]string
 	tribblers            map[string]*list.List
@@ -69,7 +79,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	newStorageServer.nodeID = nodeID
 	newStorageServer.masterServerHostPort = masterServerHostPort
 	newStorageServer.numNodes = numNodes
-
+	newStorageServer.port = port
 
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -82,16 +92,64 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	rpc.HandleHTTP()
 	go http.Serve(listener, nil)
 
+	initRegister(masterServerHostPort, newStorageServer, numNodes, port, nodeID)
+
 	go storageServerRoutine(newStorageServer)
+
 	return newStorageServer, nil
+}
+func initRegister(masterServerHostPort string, newStorageServer *storageServer, numNodes, port int, nodeID uint32)  {
+	if len(masterServerHostPort) == 0 {
+		newStorageServer.nodes = make([]storagerpc.Node, numNodes, numNodes)
+		newStorageServer.nodes[0].HostPort = ""
+		newStorageServer.nodes[0].NodeID = nodeID
+		newStorageServer.nodeIndex = 1
+
+		newStorageServer.addSlave = make(chan *storagerpc.RegisterArgs, 100)
+		newStorageServer.addSlaveReturn = make(chan *storagerpc.RegisterReply, 100)
+		newStorageServer.getServers = make(chan *storagerpc.GetServersArgs, 100)
+		newStorageServer.getServersReturn = make(chan *storagerpc.GetServersReply, 100)
+
+	} else {
+		var cli *rpc.Client
+		var err error
+		for {
+			cli, err = rpc.DialHTTP("tcp", masterServerHostPort)
+			if err == nil {
+				break
+			} else {
+				time.Sleep(1000 * time.Millisecond)
+			}
+		}
+		for {
+			args := &storagerpc.RegisterArgs{ServerInfo:storagerpc.Node{HostPort:fmt.Sprintf(":%d", port), NodeID:nodeID}}
+			var reply storagerpc.RegisterReply
+			err = cli.Call("StorageServer.RegisterServer", args, &reply)
+			if reply.Status == storagerpc.OK {
+				break
+			} else {
+				time.Sleep(1000 * time.Millisecond)
+			}
+		}
+	}
+
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
-	return errors.New("not implemented")
+	ss.addSlave <- args
+	replyTmp := <-ss.addSlaveReturn
+	reply.Status = replyTmp.Status
+	reply.Servers = replyTmp.Servers
+
+	return nil
 }
 
 func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *storagerpc.GetServersReply) error {
-	return errors.New("not implemented")
+	ss.getServers <- args
+	replyTmp := <-ss.getServersReturn
+	reply.Status = replyTmp.Status
+	reply.Servers = replyTmp.Servers
+	return nil
 }
 
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
@@ -145,6 +203,12 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 func storageServerRoutine(ss *storageServer) {
 	for {
 		select {
+		case addServerRequest := <-ss.addSlave:
+			addServerFunc(ss, addServerRequest)
+
+		case getServerRequest := <-ss.getServers:
+			getServerFunc(ss, getServerRequest)
+
 		case putRequest := <-ss.put:
 			putRequestFunc(ss, putRequest)
 
@@ -167,21 +231,57 @@ func storageServerRoutine(ss *storageServer) {
 	}
 }
 
+func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs) {
+	alreadyRegistered := false
+	for i := 0; i < ss.nodeIndex; i++ {
+		if ss.nodes[i].NodeID == addServerRequest.ServerInfo.NodeID {
+			alreadyRegistered = true
+			break
+		}
+	}
+	if !alreadyRegistered {
+		ss.nodes[ss.nodeIndex].NodeID = addServerRequest.ServerInfo.NodeID
+		ss.nodes[ss.nodeIndex].HostPort = addServerRequest.ServerInfo.HostPort
+		ss.nodeIndex++
+	}
+
+	re := storagerpc.RegisterReply{}
+	re.Servers = ss.nodes
+	if ss.nodeIndex >= ss.numNodes {
+		re.Status = storagerpc.OK
+	} else {
+		re.Status = storagerpc.NotReady
+	}
+	ss.addSlaveReturn <- &re
+}
+
+func getServerFunc(ss *storageServer, getServerRequest *storagerpc.GetServersArgs) { // getServerRequest is empty
+	re := storagerpc.GetServersReply{}
+	re.Servers = ss.nodes
+	if ss.nodeIndex == ss.numNodes {
+		re.Status = storagerpc.OK
+	} else {
+		re.Status = storagerpc.NotReady
+	}
+	ss.getServersReturn <- &re
+}
+
 func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs) {
 	ss.clients[putRequest.Key] = putRequest.Value
 	re := storagerpc.PutReply{Status: storagerpc.OK}
 
-	if _, ok := ss.tribblers[putRequest.Key]; !ok {
+	/*if _, ok := ss.tribblers[putRequest.Key]; !ok {
 		ss.tribblers[putRequest.Key] = list.New()
-	}
+	}*/
 	ss.putReturn <- &re
 }
 
 func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs) {
 	if _, ok := ss.tribblers[request.Key]; !ok {
-		re := storagerpc.PutReply{Status: storagerpc.KeyNotFound}
+		/*re := storagerpc.PutReply{Status: storagerpc.KeyNotFound}
 		ss.putListReturn <- &re
-		return
+		return*/
+		ss.tribblers[request.Key] = list.New()
 	}
 	flag := false
 	for e := ss.tribblers[request.Key].Front(); e != nil; e = e.Next() {
