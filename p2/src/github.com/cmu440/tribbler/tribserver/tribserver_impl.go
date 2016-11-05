@@ -60,6 +60,7 @@ func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.Cr
 }
 
 func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
+	fmt.Println("add substription", args.UserID, args.TargetUserID)
 	id := util.FormatUserKey(args.UserID)
 	_, err := ts.libstore.Get(id)
 	// If this user does not exist, reply directly.
@@ -85,6 +86,7 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 }
 
 func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
+	fmt.Println("remove substription", args.UserID, args.TargetUserID)
 	id := util.FormatUserKey(args.UserID)
 	_, err := ts.libstore.Get(id)
 	// If this user does not exist, reply directly.
@@ -111,6 +113,7 @@ func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *
 }
 
 func (ts *tribServer) GetFriends(args *tribrpc.GetFriendsArgs, reply *tribrpc.GetFriendsReply) error {
+	fmt.Println("get friend", args.UserID)
 	id := util.FormatUserKey(args.UserID)
 	_, err := ts.libstore.Get(id)
 	// If this user does not exist, reply directly.
@@ -118,13 +121,24 @@ func (ts *tribServer) GetFriends(args *tribrpc.GetFriendsArgs, reply *tribrpc.Ge
 		reply.Status = tribrpc.NoSuchUser
 		return nil
 	}
+	var friends []string
 	list, err := ts.libstore.GetList(util.FormatSubListKey(args.UserID))
+	for i := 0; i < len(list); i++ {
+		friendsFriendID, _ := ts.libstore.GetList(util.FormatSubListKey(list[i]))
+		for j := 0; j < len(friendsFriendID); j++ {
+			if friendsFriendID[j] == args.UserID {
+				friends = append(friends, list[i])
+				break
+			}
+		}
+	}
 	if err != nil {
+		reply.Status = tribrpc.OK
 		fmt.Println("Fail to get friend list of a user: ", id)
 		return nil
 	}
 	reply.Status = tribrpc.OK
-	reply.UserIDs = list
+	reply.UserIDs = friends
 	return nil
 }
 
