@@ -7,9 +7,10 @@ import (
 	"net"
 	"net/rpc"
 	"net/http"
-	//"strconv"
 	"fmt"
 	"time"
+	"log"
+	"os"
 )
 
 type storageServer struct {
@@ -56,6 +57,8 @@ type storageServer struct {
 //
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
+var LOGF *log.Logger
+
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
 	newStorageServer := new(storageServer)
 
@@ -98,6 +101,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 
 	return newStorageServer, nil
 }
+
 func initRegister(masterServerHostPort string, newStorageServer *storageServer, numNodes, port int, nodeID uint32)  {
 	if len(masterServerHostPort) == 0 {
 		newStorageServer.nodes = make([]storagerpc.Node, numNodes, numNodes)
@@ -201,6 +205,19 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 }
 
 func storageServerRoutine(ss *storageServer) {
+	const (
+		name = "log.txt"
+		flag = os.O_RDWR | os.O_CREATE
+		perm = os.FileMode(0666)
+	)
+
+	file, _ := os.OpenFile(name, flag, perm)
+
+	defer file.Close()
+
+
+	LOGF = log.New(file, "", log.Lshortfile|log.Lmicroseconds)
+	LOGF.Println("getList")
 	for {
 		select {
 		case addServerRequest := <-ss.addSlave:
@@ -277,6 +294,7 @@ func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs) {
 }
 
 func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs) {
+	LOGF.Println("append to list ", request.Value)
 	if _, ok := ss.tribblers[request.Key]; !ok {
 		/*re := storagerpc.PutReply{Status: storagerpc.KeyNotFound}
 		ss.putListReturn <- &re
@@ -312,6 +330,7 @@ func getRequestFunc(ss *storageServer, request *storagerpc.GetArgs) {
 }
 
 func getListRequestFunc(ss *storageServer, request *storagerpc.GetArgs) {
+	LOGF.Println("getList")
 	if _, ok := ss.tribblers[request.Key]; !ok {
 		re := storagerpc.GetListReply{Status: storagerpc.KeyNotFound}
 		ss.getListReturn <- &re

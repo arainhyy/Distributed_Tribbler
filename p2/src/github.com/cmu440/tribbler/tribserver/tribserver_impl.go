@@ -60,7 +60,7 @@ func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.Cr
 }
 
 func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-	fmt.Println("add substription", args.UserID, args.TargetUserID)
+	//fmt.Println("add substription", args.UserID, args.TargetUserID)
 	id := util.FormatUserKey(args.UserID)
 	_, err := ts.libstore.Get(id)
 	// If this user does not exist, reply directly.
@@ -86,7 +86,7 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 }
 
 func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *tribrpc.SubscriptionReply) error {
-	fmt.Println("remove substription", args.UserID, args.TargetUserID)
+	//fmt.Println("remove substription", args.UserID, args.TargetUserID)
 	id := util.FormatUserKey(args.UserID)
 	_, err := ts.libstore.Get(id)
 	// If this user does not exist, reply directly.
@@ -104,7 +104,7 @@ func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *
 	// If target user is not substribed by this user, reply directly.
 	err = ts.libstore.RemoveFromList(util.FormatSubListKey(args.UserID), args.TargetUserID)
 	if err != nil {
-		fmt.Println("Target user", args.TargetUserID, "is not subscribed by this user", args.UserID)
+		//fmt.Println("Target user", args.TargetUserID, "is not subscribed by this user", args.UserID)
 		reply.Status = tribrpc.NoSuchTargetUser
 		return nil
 	}
@@ -113,7 +113,7 @@ func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *
 }
 
 func (ts *tribServer) GetFriends(args *tribrpc.GetFriendsArgs, reply *tribrpc.GetFriendsReply) error {
-	fmt.Println("get friend", args.UserID)
+	//fmt.Println("get friend", args.UserID)
 	id := util.FormatUserKey(args.UserID)
 	_, err := ts.libstore.Get(id)
 	// If this user does not exist, reply directly.
@@ -160,9 +160,10 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 		_, err = ts.libstore.Get(postID)
 	}
 	// Create new tribble.
+	t := time.Now()
 	tribble := &tribrpc.Tribble{
 		UserID:   args.UserID,
-		Posted:   time.Now(),
+		Posted:   t,
 		Contents: args.Contents,
 	}
 	marshalledTribble, err := json.Marshal(tribble)
@@ -242,7 +243,8 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	// return the most recent 100 or less posts.
 	returnList := make([]tribrpc.Tribble, num)
 	for i := 0; i < num; i++ {
-		returnList[i] = allTribbleList[num-i-1]
+		returnList[i] = allTribbleList[len(allTribbleList)-i-1]
+		//returnList[i] = allTribbleList[num-i-1]
 	}
 	reply.Status = tribrpc.OK
 	reply.Tribbles = returnList
@@ -280,6 +282,7 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 	subUserList, err := ts.libstore.GetList(subUserID)
 	if err != nil {
 		fmt.Println("Fail to get subscription list by user ID, ", subUserID)
+		reply.Status = tribrpc.OK
 		return nil
 	}
 	var allTribbleList []tribrpc.Tribble
@@ -298,7 +301,8 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 	// return the most recent 100 or less posts.
 	returnList := make([]tribrpc.Tribble, num)
 	for i := 0; i < num; i++ {
-		returnList[i] = allTribbleList[num-i-1]
+		returnList[i] = allTribbleList[len(allTribbleList)-i-1]
+		//returnList[i] = allTribbleList[num-i-1]
 	}
 	reply.Status = tribrpc.OK
 	reply.Tribbles = returnList
