@@ -22,9 +22,15 @@ type tribServer struct {
 // the Posted field.
 type ByTime []tribrpc.Tribble
 
-func (a ByTime) Len() int           { return len(a) }
-func (a ByTime) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a ByTime) Less(i, j int) bool { return a[j].Posted.After(a[i].Posted) }
+func (a ByTime) Len() int {
+	return len(a)
+}
+func (a ByTime) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
+}
+func (a ByTime) Less(i, j int) bool {
+	return a[j].Posted.After(a[i].Posted)
+}
 
 // NewTribServer creates, starts and returns a new TribServer. masterServerHostPort
 // is the master storage server's host:port and port is this port number on which

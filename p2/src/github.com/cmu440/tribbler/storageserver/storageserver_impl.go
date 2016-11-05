@@ -1,16 +1,16 @@
 package storageserver
 
 import (
-	"errors"
 	"container/list"
-	"github.com/cmu440/tribbler/rpc/storagerpc"
-	"net"
-	"net/rpc"
-	"net/http"
+	"errors"
 	"fmt"
-	"time"
+	"github.com/cmu440/tribbler/rpc/storagerpc"
 	"log"
+	"net"
+	"net/http"
+	"net/rpc"
 	"os"
+	"time"
 )
 
 type storageServer struct {
@@ -21,32 +21,32 @@ type storageServer struct {
 	masterServerHostPort string
 	port                 int
 
-	addSlave             chan *storagerpc.RegisterArgs
-	addSlaveReturn       chan *storagerpc.RegisterReply
+	addSlave       chan *storagerpc.RegisterArgs
+	addSlaveReturn chan *storagerpc.RegisterReply
 
-	getServers           chan *storagerpc.GetServersArgs
-	getServersReturn     chan *storagerpc.GetServersReply
+	getServers       chan *storagerpc.GetServersArgs
+	getServersReturn chan *storagerpc.GetServersReply
 
-	clients              map[string]string
-	tribblers            map[string]*list.List
+	clients   map[string]string
+	tribblers map[string]*list.List
 
-	put                  chan *storagerpc.PutArgs
-	putList              chan *storagerpc.PutArgs
+	put     chan *storagerpc.PutArgs
+	putList chan *storagerpc.PutArgs
 
-	delete               chan *storagerpc.DeleteArgs
-	deleteList           chan *storagerpc.PutArgs
+	delete     chan *storagerpc.DeleteArgs
+	deleteList chan *storagerpc.PutArgs
 
-	getRequest           chan *storagerpc.GetArgs
-	getListRequest       chan *storagerpc.GetArgs
+	getRequest     chan *storagerpc.GetArgs
+	getListRequest chan *storagerpc.GetArgs
 
-	putReturn            chan *storagerpc.PutReply
-	putListReturn        chan *storagerpc.PutReply
+	putReturn     chan *storagerpc.PutReply
+	putListReturn chan *storagerpc.PutReply
 
-	getReturn            chan *storagerpc.GetReply
-	getListReturn        chan *storagerpc.GetListReply
+	getReturn     chan *storagerpc.GetReply
+	getListReturn chan *storagerpc.GetListReply
 
-	deleteReturn         chan *storagerpc.DeleteReply
-	deleteListReturn     chan *storagerpc.PutReply
+	deleteReturn     chan *storagerpc.DeleteReply
+	deleteListReturn chan *storagerpc.PutReply
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -102,7 +102,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	return newStorageServer, nil
 }
 
-func initRegister(masterServerHostPort string, newStorageServer *storageServer, numNodes, port int, nodeID uint32)  {
+func initRegister(masterServerHostPort string, newStorageServer *storageServer, numNodes, port int, nodeID uint32) {
 	if len(masterServerHostPort) == 0 {
 		newStorageServer.nodes = make([]storagerpc.Node, numNodes, numNodes)
 		newStorageServer.nodes[0].HostPort = ""
@@ -126,7 +126,7 @@ func initRegister(masterServerHostPort string, newStorageServer *storageServer, 
 			}
 		}
 		for {
-			args := &storagerpc.RegisterArgs{ServerInfo:storagerpc.Node{HostPort:fmt.Sprintf(":%d", port), NodeID:nodeID}}
+			args := &storagerpc.RegisterArgs{ServerInfo: storagerpc.Node{HostPort: fmt.Sprintf(":%d", port), NodeID: nodeID}}
 			var reply storagerpc.RegisterReply
 			err = cli.Call("StorageServer.RegisterServer", args, &reply)
 			if reply.Status == storagerpc.OK {
@@ -215,7 +215,6 @@ func storageServerRoutine(ss *storageServer) {
 
 	defer file.Close()
 
-
 	LOGF = log.New(file, "", log.Lshortfile|log.Lmicroseconds)
 	LOGF.Println("getList")
 	for {
@@ -272,7 +271,8 @@ func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs)
 	ss.addSlaveReturn <- &re
 }
 
-func getServerFunc(ss *storageServer, getServerRequest *storagerpc.GetServersArgs) { // getServerRequest is empty
+func getServerFunc(ss *storageServer, getServerRequest *storagerpc.GetServersArgs) {
+	// getServerRequest is empty
 	re := storagerpc.GetServersReply{}
 	re.Servers = ss.nodes
 	if ss.nodeIndex == ss.numNodes {

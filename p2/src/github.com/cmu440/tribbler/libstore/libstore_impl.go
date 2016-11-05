@@ -55,7 +55,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-	args := &storagerpc.GetArgs{Key:key, WantLease:false}
+	args := &storagerpc.GetArgs{Key: key, WantLease: false}
 	var reply storagerpc.GetReply
 	if err := ls.client.Call("StorageServer.Get", args, &reply); err != nil {
 		return "", err
@@ -67,14 +67,14 @@ func (ls *libstore) Get(key string) (string, error) {
 }
 
 func (ls *libstore) Put(key, value string) error {
-	args := &storagerpc.PutArgs{Key:key, Value:value}
+	args := &storagerpc.PutArgs{Key: key, Value: value}
 	var reply storagerpc.PutReply
 	err := ls.client.Call("StorageServer.Put", args, &reply)
 	if err != nil {
 		return err
-	} else if reply.Status == storagerpc.KeyNotFound{
+	} else if reply.Status == storagerpc.KeyNotFound {
 		return errors.New("PUT operation failed with KeyNotFound")
-	} else if reply.Status == storagerpc.WrongServer{
+	} else if reply.Status == storagerpc.WrongServer {
 		return errors.New("PUT operation failed with WrongServer")
 	} else {
 		return nil
@@ -83,13 +83,13 @@ func (ls *libstore) Put(key, value string) error {
 }
 
 func (ls *libstore) Delete(key string) error {
-	args := &storagerpc.DeleteArgs{Key:key}
+	args := &storagerpc.DeleteArgs{Key: key}
 	var reply storagerpc.DeleteReply
 	if err := ls.client.Call("StorageServer.Delete", args, &reply); err != nil {
 		return err
 	} else if reply.Status == storagerpc.KeyNotFound {
 		return errors.New("Delete operation failed with KeyNotFound")
-	} else if reply.Status == storagerpc.WrongServer{
+	} else if reply.Status == storagerpc.WrongServer {
 		return errors.New("Delete operation failed with WrongServer")
 	} else {
 		return nil
@@ -97,15 +97,15 @@ func (ls *libstore) Delete(key string) error {
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-	args := &storagerpc.GetArgs{Key:key}
+	args := &storagerpc.GetArgs{Key: key}
 	var reply storagerpc.GetListReply
 	if err := ls.client.Call("StorageServer.GetList", args, &reply); err != nil {
 		return nil, err
 	} else if reply.Status == storagerpc.KeyNotFound {
 		return nil, errors.New("GetList operation failed with KeyNotFound")
-	} else if reply.Status == storagerpc.WrongServer{
+	} else if reply.Status == storagerpc.WrongServer {
 		return nil, errors.New("GetList operation failed with WrongServer")
-	} else if reply.Status == storagerpc.ItemNotFound{
+	} else if reply.Status == storagerpc.ItemNotFound {
 		return nil, errors.New("GetList operation failed with ItemNotFound")
 	} else {
 		return reply.Value, nil
@@ -114,7 +114,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
 
-	args := &storagerpc.PutArgs{Key:key, Value:removeItem}
+	args := &storagerpc.PutArgs{Key: key, Value: removeItem}
 	var reply storagerpc.PutReply
 
 	if err := ls.client.Call("StorageServer.RemoveFromList", args, &reply); err != nil {
@@ -129,7 +129,7 @@ func (ls *libstore) RemoveFromList(key, removeItem string) error {
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-	args := &storagerpc.PutArgs{Key:key, Value:newItem}
+	args := &storagerpc.PutArgs{Key: key, Value: newItem}
 	var reply storagerpc.PutReply
 
 	if err := ls.client.Call("StorageServer.AppendToList", args, &reply); err != nil {
