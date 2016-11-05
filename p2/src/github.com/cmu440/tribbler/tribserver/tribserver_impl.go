@@ -279,6 +279,7 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 	subUserID := util.FormatSubListKey(args.UserID)
 	subUserList, err := ts.libstore.GetList(subUserID)
 	if err != nil {
+		reply.Status = tribrpc.OK
 		fmt.Println("Fail to get subscription list by user ID, ", subUserID)
 		return nil
 	}
