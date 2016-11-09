@@ -96,6 +96,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	go http.Serve(listener, nil)
 
 	initRegister(masterServerHostPort, newStorageServer, numNodes, port, nodeID)
+	println("finish")
 
 	go storageServerRoutine(newStorageServer)
 
@@ -105,7 +106,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 func initRegister(masterServerHostPort string, newStorageServer *storageServer, numNodes, port int, nodeID uint32) {
 	if len(masterServerHostPort) == 0 {
 		newStorageServer.nodes = make([]storagerpc.Node, numNodes, numNodes)
-		newStorageServer.nodes[0].HostPort = ""
+		newStorageServer.nodes[0].HostPort = fmt.Sprintf(":%d", port)
 		newStorageServer.nodes[0].NodeID = nodeID
 		newStorageServer.nodeIndex = 1
 
@@ -259,6 +260,7 @@ func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs)
 		ss.nodes[ss.nodeIndex].NodeID = addServerRequest.ServerInfo.NodeID
 		ss.nodes[ss.nodeIndex].HostPort = addServerRequest.ServerInfo.HostPort
 		ss.nodeIndex++
+		println("register one ")
 	}
 
 	re := storagerpc.RegisterReply{}
