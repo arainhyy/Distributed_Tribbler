@@ -169,11 +169,15 @@ func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storage
 func (ls *libstore) GetStorageServerConn(key string) *rpc.Client {
 	hashVal := StoreHash(key)
 	hostPort := ls.storageServerNodes[0].HostPort
-	for _, node := range ls.storageServerNodes {
+	upbound := len(ls.storageServerNodes)
+	i := 1
+	for i < upbound {
+		node := ls.storageServerNodes[i]
 		if node.NodeID >= hashVal {
 			hostPort = node.HostPort
 			break
 		}
+		i++
 	}
 	conn, _ := rpc.DialHTTP("tcp", hostPort)
 	return conn
