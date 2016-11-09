@@ -3,9 +3,9 @@ package libstore
 import (
 	"errors"
 	"fmt"
+	"github.com/cmu440/tribbler/rpc/librpc"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 	"net/rpc"
-	//"github.com/cmu440/tribbler/rpc/librpc"
 	"time"
 )
 
@@ -15,6 +15,9 @@ type libstore struct {
 	mode                 LeaseMode
 	client               *rpc.Client
 	storageServerNodes   []storagerpc.Node
+	queryTimestamps      map[string][]time.Time
+	leases               map[string]storagerpc.Lease
+	cache                map[string]interface{}
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -47,10 +50,13 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	if err != nil {
 		return nil, errors.New("fail to Dail HTTP")
 	}
-	libstore := libstore{client: cli}
+	libstore := &libstore{client: cli}
 	libstore.myHostPort = myHostPort
 	libstore.masterServerHostPort = masterServerHostPort
 	libstore.mode = mode
+	libstore.queryTimestamps = make(map[string][]time.Time)
+	libstore.leases = make(map[string]storagerpc.Lease)
+	libstore.cache = make(map[string]interface{})
 	// Get all storage server nodes.
 	tryTimes := 0
 	args := &storagerpc.GetServersArgs{}
@@ -66,19 +72,69 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	}
 	libstore.storageServerNodes = reply.Servers
 	fmt.Println(reply.Servers[0].HostPort, "hostport")
+
 	//lib := new(librpc.RemoteLeaseCallbacks)
-	//rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore)) // useless in this checkpoint
-	return &libstore, nil
+	rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
+	return libstore, nil
+}
+
+func (ls *libstore) CheckQueryTimestamp(key string) bool {
+	_, ok := ls.queryTimestamps[key]
+	// If no query of this key before, add entry for this key.
+	if !ok {
+		queryTimes := make([]time.Time, 0)
+		ls.queryTimestamps[key] = queryTimes
+	}
+	// Add this time to timestamp list.
+	timestamps, _ := ls.queryTimestamps[key]
+	list := append(timestamps, time.Now())
+	ls.queryTimestamps[key] = list
+
+	if len(list) < storagerpc.QueryCacheThresh {
+		return false
+	}
+	firstTime := list[len(list)-storagerpc.QueryCacheThresh]
+	newList := list[len(list)-storagerpc.QueryCacheThresh:]
+	ls.queryTimestamps[key] = newList
+	if time.Since(firstTime).Seconds() < storagerpc.QueryCacheSeconds {
+		return true
+	}
+	return false
+}
+
+func (ls *libstore) DeleteCacheLineWhenTimeout(key string) {
+	lease := ls.leases[key]
+	<-time.After(time.Duration(lease.ValidSeconds) * time.Second)
+	delete(ls.cache, key)
+	delete(ls.leases, key)
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-	args := &storagerpc.GetArgs{Key: key, WantLease: false}
+	// Check cache first.
+	value, ok := ls.cache[key]
+	if ok {
+		lease, _ := ls.leases[key]
+		if lease.Granted {
+			return value.(string), nil
+		}
+	}
+	wantLease := false
+	if ls.mode == Always {
+		wantLease = ls.CheckQueryTimestamp(key)
+	}
+
+	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myHostPort}
 	var reply storagerpc.GetReply
 	if err := ls.GetStorageServerConn(key).Call("StorageServer.Get", args, &reply); err != nil {
 		return "", err
 	} else if reply.Status == storagerpc.KeyNotFound {
 		return "", errors.New("GET operation failed with KeyNotFound")
 	} else {
+		if wantLease && reply.Lease.Granted {
+			ls.cache[key] = reply.Value
+			ls.leases[key] = reply.Lease
+			go ls.DeleteCacheLineWhenTimeout(key)
+		}
 		return reply.Value, nil
 	}
 }
@@ -114,7 +170,20 @@ func (ls *libstore) Delete(key string) error {
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-	args := &storagerpc.GetArgs{Key: key}
+	// Check cache first.
+	value, ok := ls.cache[key]
+	if ok {
+		lease, _ := ls.leases[key]
+		if lease.Granted {
+			return value.([]string), nil
+		}
+	}
+	wantLease := false
+	if ls.mode == Always {
+		wantLease = ls.CheckQueryTimestamp(key)
+	}
+
+	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myHostPort}
 	var reply storagerpc.GetListReply
 	if err := ls.GetStorageServerConn(key).Call("StorageServer.GetList", args, &reply); err != nil {
 		return nil, err
@@ -125,6 +194,11 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	} else if reply.Status == storagerpc.ItemNotFound {
 		return nil, errors.New("GetList operation failed with ItemNotFound")
 	} else {
+		if wantLease && reply.Lease.Granted {
+			ls.cache[key] = reply.Value
+			ls.leases[key] = reply.Lease
+			go ls.DeleteCacheLineWhenTimeout(key)
+		}
 		return reply.Value, nil
 	}
 }
@@ -163,7 +237,10 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
-	return errors.New("not implemented")
+	delete(ls.cache, args.Key)
+	delete(ls.leases, args.Key)
+	reply.Status = storagerpc.OK
+	return nil
 }
 
 func (ls *libstore) GetStorageServerConn(key string) *rpc.Client {
