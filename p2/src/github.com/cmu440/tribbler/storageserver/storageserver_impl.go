@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 	"sync"
+	"github.com/cmu440/tribbler/libstore"
 )
 
 type hasLeaseClient struct {
@@ -21,38 +22,15 @@ type hasLeaseClient struct {
 
 type storageServer struct {
 	nodeID               uint32
+	upperBound	uint32
 	numNodes             int
 	nodes                []storagerpc.Node
 	nodeIndex            int
 	masterServerHostPort string
 	port                 int
 
-	addSlave             chan *storagerpc.RegisterArgs
-	addSlaveReturn       chan *storagerpc.RegisterReply
-
-	getServers           chan *storagerpc.GetServersArgs
-	getServersReturn     chan *storagerpc.GetServersReply
-
 	clients              map[string]string
 	tribblers            map[string]*list.List
-
-	put                  chan *storagerpc.PutArgs
-	putList              chan *storagerpc.PutArgs
-
-	delete               chan *storagerpc.DeleteArgs
-	deleteList           chan *storagerpc.PutArgs
-
-	getRequest           chan *storagerpc.GetArgs
-	getListRequest       chan *storagerpc.GetArgs
-
-	putReturn            chan *storagerpc.PutReply
-	putListReturn        chan *storagerpc.PutReply
-
-	getReturn            chan *storagerpc.GetReply
-	getListReturn        chan *storagerpc.GetListReply
-
-	deleteReturn         chan *storagerpc.DeleteReply
-	deleteListReturn     chan *storagerpc.PutReply
 
 	lock                 *sync.Mutex
 	cacheLocks           map[string]*sync.Mutex
@@ -70,27 +48,16 @@ type storageServer struct {
 var LOGF *log.Logger
 
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
+
 	newStorageServer := new(storageServer)
 	newStorageServer.cacheLocks = make(map[string]*sync.Mutex)
 	newStorageServer.keyClientLeaseMap = make(map[string][]hasLeaseClient)
 	newStorageServer.clients = make(map[string]string)
 	newStorageServer.tribblers = make(map[string]*list.List)
-	newStorageServer.delete = make(chan *storagerpc.DeleteArgs, 1000)
-	newStorageServer.deleteReturn = make(chan *storagerpc.DeleteReply, 1000)
-	newStorageServer.deleteList = make(chan *storagerpc.PutArgs, 1000)
-	newStorageServer.deleteListReturn = make(chan *storagerpc.PutReply, 1000)
 
-	newStorageServer.getRequest = make(chan *storagerpc.GetArgs, 1000)
-	newStorageServer.getListRequest = make(chan *storagerpc.GetArgs, 1000)
-	newStorageServer.getReturn = make(chan *storagerpc.GetReply, 1000)
-	newStorageServer.getListReturn = make(chan *storagerpc.GetListReply, 1000)
-
-	newStorageServer.put = make(chan *storagerpc.PutArgs, 1000)
-	newStorageServer.putList = make(chan *storagerpc.PutArgs, 1000)
-	newStorageServer.putReturn = make(chan *storagerpc.PutReply, 1000)
-	newStorageServer.putListReturn = make(chan *storagerpc.PutReply, 1000)
 
 	newStorageServer.nodeID = nodeID
+	newStorageServer.upperBound = 4294967295
 	newStorageServer.masterServerHostPort = masterServerHostPort
 	newStorageServer.numNodes = numNodes
 	newStorageServer.port = port
@@ -109,7 +76,6 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	go http.Serve(listener, nil)
 
 	initRegister(masterServerHostPort, newStorageServer, numNodes, port, nodeID)
-	println("finish")
 
 	go storageServerRoutine(newStorageServer)
 
@@ -117,16 +83,11 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 }
 
 func initRegister(masterServerHostPort string, newStorageServer *storageServer, numNodes, port int, nodeID uint32) {
+	newStorageServer.nodes = make([]storagerpc.Node, numNodes, numNodes)
 	if len(masterServerHostPort) == 0 {
-		newStorageServer.nodes = make([]storagerpc.Node, numNodes, numNodes)
 		newStorageServer.nodes[0].HostPort = fmt.Sprintf(":%d", port)
 		newStorageServer.nodes[0].NodeID = nodeID
 		newStorageServer.nodeIndex = 1
-
-		newStorageServer.addSlave = make(chan *storagerpc.RegisterArgs, 100)
-		newStorageServer.addSlaveReturn = make(chan *storagerpc.RegisterReply, 100)
-		newStorageServer.getServers = make(chan *storagerpc.GetServersArgs, 100)
-		newStorageServer.getServersReturn = make(chan *storagerpc.GetServersReply, 100)
 
 	} else {
 		var cli *rpc.Client
@@ -150,12 +111,10 @@ func initRegister(masterServerHostPort string, newStorageServer *storageServer, 
 			}
 		}
 	}
-
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
-	ss.addSlave <- args
-	replyTmp := <-ss.addSlaveReturn
+	replyTmp := addServerFunc(ss, args)
 	reply.Status = replyTmp.Status
 	reply.Servers = replyTmp.Servers
 
@@ -163,16 +122,15 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 }
 
 func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *storagerpc.GetServersReply) error {
-	ss.getServers <- args
-	replyTmp := <-ss.getServersReturn
+	replyTmp := getServerFunc(ss, args)
 	reply.Status = replyTmp.Status
+	ss.nodes = replyTmp.Servers
 	reply.Servers = replyTmp.Servers
 	return nil
 }
 
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
-	ss.getRequest <- args
-	replyTmp := <-ss.getReturn
+	replyTmp := getRequestFunc(ss, args)
 	reply.Status = replyTmp.Status
 	reply.Lease = replyTmp.Lease
 	reply.Value = replyTmp.Value
@@ -180,15 +138,13 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 }
 
 func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.DeleteReply) error {
-	ss.delete <- args
-	replyTmp := <-ss.deleteReturn
+	replyTmp := deleteRequestFunc(ss, args)
 	reply.Status = replyTmp.Status
 	return nil
 }
 
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
-	ss.getListRequest <- args
-	replyTmp := <-ss.getListReturn
+	replyTmp := getListRequestFunc(ss, args)
 	reply.Status = replyTmp.Status
 	reply.Value = replyTmp.Value
 	reply.Lease = replyTmp.Lease
@@ -196,73 +152,51 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 }
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-
-	ss.put <- args
-	replyTmp := <-ss.putReturn
+	replyTmp := putRequestFunc(ss, args)
 	reply.Status = replyTmp.Status
 	return nil
 }
 
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	ss.putList <- args
-	replyTmp := <-ss.putListReturn
+	replyTmp := putListRequestFunc(ss, args)
 	reply.Status = replyTmp.Status
 
 	return nil
 }
 
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-	ss.deleteList <- args
-	replyTmp := <-ss.deleteListReturn
+	replyTmp := deleteListRequestFunc(ss, args)
 	reply.Status = replyTmp.Status
 
 	return nil
 }
 
 func storageServerRoutine(ss *storageServer) {
-	const (
-		name = "log.txt"
-		flag = os.O_RDWR | os.O_CREATE
-		perm = os.FileMode(0666)
-	)
+	if len(ss.masterServerHostPort) == 0 {
+		const (
+			name = "log.txt"
+			flag = os.O_RDWR | os.O_CREATE
+			perm = os.FileMode(0666)
+		)
 
-	file, _ := os.OpenFile(name, flag, perm)
+		file, _ := os.OpenFile(name, flag, perm)
 
-	defer file.Close()
+		defer file.Close()
 
-	LOGF = log.New(file, "", log.Lshortfile | log.Lmicroseconds)
-	LOGF.Println("getList")
+		LOGF = log.New(file, "", log.Lshortfile | log.Lmicroseconds)
+		LOGF.Printf("NewStorageServer")
+		LOGF.Printf("numNodes : %d", ss.numNodes)
+	}
 	for {
 		select {
-		case addServerRequest := <-ss.addSlave:
-			addServerFunc(ss, addServerRequest)
-
-		case getServerRequest := <-ss.getServers:
-			getServerFunc(ss, getServerRequest)
-
-		case putRequest := <-ss.put:
-			putRequestFunc(ss, putRequest)
-
-		case request := <-ss.putList:
-			putListRequestFunc(ss, request)
-
-		case request := <-ss.getRequest:
-			getRequestFunc(ss, request)
-
-		case request := <-ss.getListRequest:
-			getListRequestFunc(ss, request)
-
-		case deleteRequest := <-ss.delete:
-			deleteRequestFunc(ss, deleteRequest)
-
-		case deleteListRequest := <-ss.deleteList:
-			deleteListRequestFunc(ss, deleteListRequest)
 
 		}
 	}
 }
 
-func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs) {
+func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs) *storagerpc.RegisterReply{
+
+	LOGF.Print("add Server")
 	ss.lock.Lock()
 	alreadyRegistered := false
 	for i := 0; i < ss.nodeIndex; i++ {
@@ -275,7 +209,7 @@ func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs)
 		ss.nodes[ss.nodeIndex].NodeID = addServerRequest.ServerInfo.NodeID
 		ss.nodes[ss.nodeIndex].HostPort = addServerRequest.ServerInfo.HostPort
 		ss.nodeIndex++
-		println("register one ")
+		LOGF.Printf("register one ")
 	}
 
 	re := storagerpc.RegisterReply{}
@@ -285,48 +219,92 @@ func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs)
 	} else {
 		re.Status = storagerpc.NotReady
 	}
-	ss.addSlaveReturn <- &re
+	min := uint32(4294967295)
+	for i := 0; i < len(ss.nodes); i++ {
+		LOGF.Printf("server %d : nodeID: %d, hostport : %s", i, ss.nodes[i].NodeID, ss.nodes[i].HostPort)
+		if ss.nodes[i].NodeID < ss.upperBound &&
+			ss.nodes[i].NodeID > ss.nodeID {
+			ss.upperBound = ss.nodes[i].NodeID - 1
+		}
+		if ss.nodes[i].NodeID < min {
+			min = ss.nodes[i].NodeID
+		}
+	}
+	if ss.upperBound == 4294967295 {
+		ss.upperBound = min - 1
+	}
 	ss.lock.Unlock()
+	LOGF.Printf("add Server finish")
+	return &re
 }
 
-func getServerFunc(ss *storageServer, getServerRequest *storagerpc.GetServersArgs) {
+func getServerFunc(ss *storageServer, getServerRequest *storagerpc.GetServersArgs) *storagerpc.GetServersReply{
+
+	LOGF.Printf("get Server")
 	ss.lock.Lock()
 	// getServerRequest is empty
 	re := storagerpc.GetServersReply{}
 	re.Servers = ss.nodes
 	if ss.nodeIndex == ss.numNodes {
 		re.Status = storagerpc.OK
+
 	} else {
 		re.Status = storagerpc.NotReady
 	}
-	ss.getServersReturn <- &re
 	ss.lock.Unlock()
+	LOGF.Printf("get Server finish")
+	return &re
 }
 
-func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs) {
+func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs) *storagerpc.PutReply{
+	LOGF.Printf("put, key is %s", putRequest.Key)
 	ss.lock.Lock()
+
+	hashVal := libstore.StoreHash(putRequest.Key)
+	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.nodeID){
+		LOGF.Printf("WrongServer, lowerBound: %d, key: %d, upperBound: %d", ss.nodeID, hashVal, ss.upperBound)
+		re := storagerpc.PutReply{Status: storagerpc.WrongServer}
+		ss.lock.Unlock()
+		return &re
+	}
+
+	if _, ok := ss.cacheLocks[putRequest.Key]; !ok {
+		// it's a new key, init the mutex for this key
+		ss.cacheLocks[putRequest.Key] = &sync.Mutex{}
+		ss.keyClientLeaseMap[putRequest.Key] = make([]hasLeaseClient, 0)
+	}
+
+	ss.cacheLocks[putRequest.Key].Lock()
+	ss.lock.Unlock()
 	// look for all clients that have been granted the lease
 	// lock to grant new leases for the key
 	// launch new goroutine to send revokeLease rpc to all these clients
 	// after all rpc received the OK, unlock to grant new leases
 	re := storagerpc.PutReply{Status: storagerpc.OK}
 
-	if _, ok := ss.cacheLocks[putRequest.Key]; ok {
-		ss.cacheLocks[putRequest.Key].Lock()
-		go sendRevokeLease(ss, putRequest.Key)
-	} else {
-		// it's a new key, init the mutex for this key
-		ss.cacheLocks[putRequest.Key] = &sync.Mutex{}
-		ss.keyClientLeaseMap[putRequest.Key] = make([]hasLeaseClient, 0)
-	}
+	LOGF.Printf("lock already exist, begin revoke")
+	sendRevokeLease(ss, putRequest.Key)
+
 	ss.clients[putRequest.Key] = putRequest.Value
-	ss.lock.Unlock()
-	ss.putReturn <- &re
+	ss.cacheLocks[putRequest.Key].Unlock()
+	return &re
+
 }
 
-func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs) {
-	ss.lock.Lock()
+func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs) *storagerpc.PutReply{
 	LOGF.Println("append to list ", request.Value)
+	ss.lock.Lock()
+
+	hashVal := libstore.StoreHash(request.Key)
+	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.nodeID){
+		re := storagerpc.PutReply{Status: storagerpc.WrongServer}
+		ss.lock.Unlock()
+		LOGF.Println("append to list finish 1")
+		return &re
+	}
+
 	if _, ok := ss.tribblers[request.Key]; !ok {
 		ss.tribblers[request.Key] = list.New()
 	}
@@ -340,56 +318,83 @@ func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs) {
 	if flag {
 		re := storagerpc.PutReply{Status: storagerpc.ItemExists}
 		ss.lock.Unlock()
-		ss.putListReturn <- &re
-		return
+		LOGF.Println("append to list finish 2")
+		return &re
 	}
 
 	if _, ok := ss.cacheLocks[request.Key]; ok {
-		ss.cacheLocks[request.Key].Lock()
-		go sendRevokeLease(ss, request.Key)
-	} else {
 		// it's a new key, init the mutex for this key
 		ss.cacheLocks[request.Key] = &sync.Mutex{}
 		ss.keyClientLeaseMap[request.Key] = make([]hasLeaseClient, 0)
 	}
+	ss.cacheLocks[request.Key].Lock()
+	ss.lock.Unlock()
+
+	sendRevokeLease(ss, request.Key)
 	ss.tribblers[request.Key].PushFront(request.Value)
 
 	re := storagerpc.PutReply{Status: storagerpc.OK}
-	ss.lock.Unlock()
-	ss.putListReturn <- &re
+
+	LOGF.Println("append to list finish 3")
+	ss.cacheLocks[request.Key].Unlock()
+	return &re
+
 }
 
-func getRequestFunc(ss *storageServer, request *storagerpc.GetArgs) {
+func getRequestFunc(ss *storageServer, request *storagerpc.GetArgs) *storagerpc.GetReply{
+	LOGF.Printf("get, key is %s", request.Key)
 	ss.lock.Lock()
+	hashVal := libstore.StoreHash(request.Key)
+	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.nodeID){
+		re := storagerpc.GetReply{Status: storagerpc.WrongServer}
+		ss.lock.Unlock()
+		LOGF.Printf("get finish 1")
+		return &re
+	}
+
 	if _, ok := ss.clients[request.Key]; !ok {
 		re := storagerpc.GetReply{Status: storagerpc.KeyNotFound}
 		ss.lock.Unlock()
-		ss.getReturn <- &re
-		return
+		LOGF.Printf("get finish 2")
+		return &re
 	}
 	re := storagerpc.GetReply{Status: storagerpc.OK}
 	re.Value = ss.clients[request.Key]
 
 	if request.WantLease {
+		LOGF.Printf("want lease, key : %s", request.Key)
 		ss.cacheLocks[request.Key].Lock() // wait for lease can be granted
 		tmp := append(ss.keyClientLeaseMap[request.Key], hasLeaseClient{leaseTime: time.Now(), hostport: request.HostPort})
 		ss.keyClientLeaseMap[request.Key] = tmp
+		LOGF.Printf("lease size : %d", len(ss.keyClientLeaseMap[request.Key]))
 		re.Lease.Granted = true
 		re.Lease.ValidSeconds = storagerpc.LeaseSeconds
 		ss.cacheLocks[request.Key].Unlock()
 	}
 	ss.lock.Unlock()
-	ss.getReturn <- &re
+	LOGF.Printf("get finish 3")
+	return &re
 }
 
-func getListRequestFunc(ss *storageServer, request *storagerpc.GetArgs) {
+func getListRequestFunc(ss *storageServer, request *storagerpc.GetArgs) *storagerpc.GetListReply{
+
+	LOGF.Printf("get, key is %s", request.Key)
 	ss.lock.Lock()
-	LOGF.Println("getList")
+	hashVal := libstore.StoreHash(request.Key)
+	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.nodeID){
+		re := storagerpc.GetListReply{Status: storagerpc.WrongServer}
+		ss.lock.Unlock()
+		LOGF.Printf("get list finish 1")
+		return &re
+	}
+
 	if _, ok := ss.tribblers[request.Key]; !ok {
 		re := storagerpc.GetListReply{Status: storagerpc.KeyNotFound}
 		ss.lock.Unlock()
-		ss.getListReturn <- &re
-		return
+		LOGF.Printf("get list finish 2")
+		return &re
 	}
 	re := storagerpc.GetListReply{Status: storagerpc.OK}
 
@@ -401,6 +406,7 @@ func getListRequestFunc(ss *storageServer, request *storagerpc.GetArgs) {
 	re.Value = str
 
 	if request.WantLease {
+		LOGF.Printf("want lease, key : %s", request.Key)
 		ss.cacheLocks[request.Key].Lock() // wait for lease can be granted
 		tmp := append(ss.keyClientLeaseMap[request.Key], hasLeaseClient{leaseTime: time.Now(), hostport: request.HostPort})
 		ss.keyClientLeaseMap[request.Key] = tmp
@@ -408,38 +414,62 @@ func getListRequestFunc(ss *storageServer, request *storagerpc.GetArgs) {
 		re.Lease.ValidSeconds = storagerpc.LeaseSeconds
 		ss.cacheLocks[request.Key].Unlock()
 	}
-
 	ss.lock.Unlock()
-	ss.getListReturn <- &re
+
+	LOGF.Printf("get list finish 3")
+	return &re
 }
 
-func deleteRequestFunc(ss *storageServer, deleteRequest *storagerpc.DeleteArgs) {
+func deleteRequestFunc(ss *storageServer, deleteRequest *storagerpc.DeleteArgs) *storagerpc.DeleteReply{
+	LOGF.Printf("delete: %s", deleteRequest.Key)
 	ss.lock.Lock()
+
+	hashVal := libstore.StoreHash(deleteRequest.Key)
+	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.nodeID){
+		re := storagerpc.DeleteReply{Status: storagerpc.WrongServer}
+		ss.lock.Unlock()
+		LOGF.Printf("delete finish 1")
+		return &re
+	}
+
 	if _, ok := ss.clients[deleteRequest.Key]; !ok {
 		re := storagerpc.DeleteReply{Status: storagerpc.KeyNotFound}
 		ss.lock.Unlock()
-		ss.deleteReturn <- &re
-		return
+		LOGF.Printf("delete finish 2")
+		return &re
 	}
 
 	ss.cacheLocks[deleteRequest.Key].Lock()
-	go sendRevokeLease(ss, deleteRequest.Key)
-
+	ss.lock.Unlock()
+	sendRevokeLease(ss, deleteRequest.Key)
 	delete(ss.clients, deleteRequest.Key)
 	//delete(ss.tribblers, deleteRequest.Key)
 	re := storagerpc.DeleteReply{Status: storagerpc.OK}
-	ss.lock.Unlock()
-	ss.deleteReturn <- &re
+	ss.cacheLocks[deleteRequest.Key].Unlock()
 
+	LOGF.Printf("delete finish 3")
+	return &re
 }
 
-func deleteListRequestFunc(ss *storageServer, deleteListRequest *storagerpc.PutArgs) {
+func deleteListRequestFunc(ss *storageServer, deleteListRequest *storagerpc.PutArgs) *storagerpc.PutReply{
+	LOGF.Printf("delete: %s", deleteListRequest.Key)
 	ss.lock.Lock()
+
+	hashVal := libstore.StoreHash(deleteListRequest.Key)
+	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.nodeID){
+		re := storagerpc.PutReply{Status: storagerpc.WrongServer}
+		ss.lock.Unlock()
+		LOGF.Printf("delete list finish 1")
+		return &re
+	}
+
 	if _, ok := ss.tribblers[deleteListRequest.Key]; !ok {
 		re := storagerpc.PutReply{Status: storagerpc.KeyNotFound}
 		ss.lock.Unlock()
-		ss.deleteListReturn <- &re
-		return
+		LOGF.Printf("delete list finish 2")
+		return &re
 	}
 	flag := false
 
@@ -452,41 +482,46 @@ func deleteListRequestFunc(ss *storageServer, deleteListRequest *storagerpc.PutA
 	if !flag {
 		re := storagerpc.PutReply{Status: storagerpc.ItemNotFound}
 		ss.lock.Unlock()
-		ss.deleteListReturn <- &re
-		return
-	} else {
-		ss.cacheLocks[deleteListRequest.Key].Lock()
-		go sendRevokeLease(ss, deleteListRequest.Key)
-
-		for e := ss.tribblers[deleteListRequest.Key].Front(); e != nil; e = e.Next() {
-			if e.Value == deleteListRequest.Value {
-				ss.tribblers[deleteListRequest.Key].Remove(e)
-			}
-		}
-
-		re := storagerpc.PutReply{Status: storagerpc.OK}
-		ss.lock.Unlock()
-		ss.deleteListReturn <- &re
+		LOGF.Printf("delete list finish 3")
+		return &re
 	}
+
+	ss.cacheLocks[deleteListRequest.Key].Lock()
+	ss.lock.Unlock()
+	sendRevokeLease(ss, deleteListRequest.Key)
+
+	for e := ss.tribblers[deleteListRequest.Key].Front(); e != nil; e = e.Next() {
+		if e.Value == deleteListRequest.Value {
+			ss.tribblers[deleteListRequest.Key].Remove(e)
+		}
+	}
+
+	re := storagerpc.PutReply{Status: storagerpc.OK}
+	ss.cacheLocks[deleteListRequest.Key].Unlock()
+	LOGF.Printf("delete list finish 4")
+	return &re
 }
 
 func sendRevokeLease(ss *storageServer, key string) {
+	LOGF.Printf("number of revoke : %d", len(ss.keyClientLeaseMap[key]))
 	for i := 0; i < len(ss.keyClientLeaseMap[key]); i++ {
 		leaseTmp := ss.keyClientLeaseMap[key][i]
 
-		if time.Now().After(leaseTmp.leaseTime.Add(storagerpc.LeaseGuardSeconds * time.Second)) {
+		if !time.Now().After(leaseTmp.leaseTime.Add((storagerpc.LeaseGuardSeconds + storagerpc.LeaseSeconds) * time.Second)) {
 			cli, err := rpc.DialHTTP("tcp", ss.keyClientLeaseMap[key][i].hostport)
 			if err != nil {
-				fmt.Printf("fail to Dail HTTP")
+				LOGF.Println(err)
+				LOGF.Printf("fail to Dail HTTP : %s", ss.keyClientLeaseMap[key][i].hostport)
 			}
+
 			revokeLeaseArg := &storagerpc.RevokeLeaseArgs{Key: key}
 			revokeLeaseReply := storagerpc.RevokeLeaseReply{}
 			cli.Call("LeaseCallbacks.RevokeLease", revokeLeaseArg, &revokeLeaseReply)
+			LOGF.Printf("REVOKE : %s", key)
 			if revokeLeaseReply.Status != storagerpc.OK {
-				fmt.Printf("revokeLeaseReply status is not OK, key is %s", key)
+				LOGF.Printf("revokeLeaseReply status is not OK, key is %s", key)
 			}
 		}
 	}
 	ss.keyClientLeaseMap[key] = make([]hasLeaseClient, 0) // clear the lease
-	ss.cacheLocks[key].Unlock()
 }
