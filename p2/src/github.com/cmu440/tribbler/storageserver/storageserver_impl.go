@@ -37,6 +37,9 @@ type storageServer struct {
 	lock                 *sync.Mutex
 	serverLock           *sync.Mutex
 	cacheLocks           map[string]*sync.Mutex
+
+	numberOfPut         map[string]int
+	numberOfPutLock     map[string]*sync.Mutex
 	keyClientLeaseMap    map[string][]hasLeaseClient
 }
 
@@ -59,6 +62,10 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 
 	newStorageServer.cacheLocks = make(map[string]*sync.Mutex)
 	newStorageServer.keyClientLeaseMap = make(map[string][]hasLeaseClient)
+
+	newStorageServer.numberOfPut = make(map[string]int)
+	newStorageServer.numberOfPutLock = make(map[string]*sync.Mutex)
+
 	newStorageServer.clients = make(map[string]string)
 	newStorageServer.tribblers = make(map[string]*list.List)
 
@@ -299,9 +306,7 @@ func getServerFunc(ss *storageServer, getServerRequest *storagerpc.GetServersArg
 
 func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs) *storagerpc.PutReply {
 	LOGF.Printf("put, key is %s", putRequest.Key)
-	println("put")
 	ss.lock.Lock()
-	println("put1")
 	hashVal := libstore.StoreHash(putRequest.Key)
 	if (ss.upperBound > ss.lowerBound && (hashVal < ss.lowerBound || hashVal > ss.upperBound)) ||
 		(hashVal > ss.upperBound && hashVal < ss.lowerBound) {
@@ -315,23 +320,37 @@ func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs) *storager
 		// it's a new key, init the mutex for this key
 		ss.cacheLocks[putRequest.Key] = &sync.Mutex{}
 		ss.keyClientLeaseMap[putRequest.Key] = make([]hasLeaseClient, 0)
+		ss.numberOfPut[putRequest.Key] = 0
+		ss.numberOfPutLock[putRequest.Key] = &sync.Mutex{}
 	}
+
 	ss.lock.Unlock()
+
+	ss.numberOfPutLock[putRequest.Key].Lock()
+	ss.numberOfPut[putRequest.Key] ++
+	ss.numberOfPutLock[putRequest.Key].Unlock()
+
+	LOGF.Printf("begin revoke")
+	sendRevokeLease(ss, putRequest.Key)
+
 	ss.cacheLocks[putRequest.Key].Lock()
 
 	// look for all clients that have been granted the lease
 	// lock to grant new leases for the key
 	// launch new goroutine to send revokeLease rpc to all these clients
 	// after all rpc received the OK, unlock to grant new leases
-	re := storagerpc.PutReply{Status: storagerpc.OK}
-
-	LOGF.Printf("begin revoke")
-	sendRevokeLease(ss, putRequest.Key)
 
 	ss.clients[putRequest.Key] = putRequest.Value
+
+
 	LOGF.Printf("put finish, key is %s, new value is %s", putRequest.Key, putRequest.Value)
 	ss.cacheLocks[putRequest.Key].Unlock()
 
+
+	ss.numberOfPutLock[putRequest.Key].Lock()
+	ss.numberOfPut[putRequest.Key] --
+	ss.numberOfPutLock[putRequest.Key].Unlock()
+	re := storagerpc.PutReply{Status: storagerpc.OK}
 	return &re
 
 }
@@ -368,17 +387,28 @@ func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs) *storage
 		// it's a new key, init the mutex for this key
 		ss.cacheLocks[request.Key] = &sync.Mutex{}
 		ss.keyClientLeaseMap[request.Key] = make([]hasLeaseClient, 0)
+		ss.numberOfPut[request.Key] = 0
+		ss.numberOfPutLock[request.Key] = &sync.Mutex{}
 	}
 	ss.lock.Unlock()
-	ss.cacheLocks[request.Key].Lock()
+
+	ss.numberOfPutLock[request.Key].Lock()
+	ss.numberOfPut[request.Key] ++
+	ss.numberOfPutLock[request.Key].Unlock()
 
 	sendRevokeLease(ss, request.Key)
 
-	ss.tribblers[request.Key].PushFront(request.Value)
-	re := storagerpc.PutReply{Status: storagerpc.OK}
+	ss.cacheLocks[request.Key].Lock()
 
-	LOGF.Println("append to list finish 3")
+	ss.tribblers[request.Key].PushFront(request.Value)
+
 	ss.cacheLocks[request.Key].Unlock()
+
+	ss.numberOfPutLock[request.Key].Lock()
+	ss.numberOfPut[request.Key] --
+	ss.numberOfPutLock[request.Key].Unlock()
+	re := storagerpc.PutReply{Status: storagerpc.OK}
+	LOGF.Println("append to list finish 3")
 	return &re
 
 }
@@ -411,11 +441,21 @@ func getRequestFunc(ss *storageServer, request *storagerpc.GetArgs) *storagerpc.
 
 	if request.WantLease {
 		LOGF.Printf("want lease, key : %s", request.Key)
-		tmp := append(ss.keyClientLeaseMap[request.Key], hasLeaseClient{leaseTime: time.Now(), hostport: request.HostPort})
-		ss.keyClientLeaseMap[request.Key] = tmp
-		LOGF.Printf("lease size : %d", len(ss.keyClientLeaseMap[request.Key]))
-		re.Lease.Granted = true
-		re.Lease.ValidSeconds = storagerpc.LeaseSeconds
+		flag := false
+		ss.numberOfPutLock[request.Key].Lock()
+		if ss.numberOfPut[request.Key] == 0 {
+			flag = true
+		}
+		ss.numberOfPutLock[request.Key].Unlock()
+		if flag {
+			tmp := append(ss.keyClientLeaseMap[request.Key], hasLeaseClient{leaseTime: time.Now(), hostport: request.HostPort})
+			ss.keyClientLeaseMap[request.Key] = tmp
+			LOGF.Printf("lease size : %d", len(ss.keyClientLeaseMap[request.Key]))
+			re.Lease.Granted = true
+			re.Lease.ValidSeconds = storagerpc.LeaseSeconds
+		} else {
+			re.Lease.Granted = false
+		}
 	}
 	ss.cacheLocks[request.Key].Unlock()
 	LOGF.Printf("get finish 3")
@@ -456,10 +496,20 @@ func getListRequestFunc(ss *storageServer, request *storagerpc.GetArgs) *storage
 
 	if request.WantLease {
 		LOGF.Printf("want lease, key : %s", request.Key)
-		tmp := append(ss.keyClientLeaseMap[request.Key], hasLeaseClient{leaseTime: time.Now(), hostport: request.HostPort})
-		ss.keyClientLeaseMap[request.Key] = tmp
-		re.Lease.Granted = true
-		re.Lease.ValidSeconds = storagerpc.LeaseSeconds
+		flag := false
+		ss.numberOfPutLock[request.Key].Lock()
+		if ss.numberOfPut[request.Key] == 0 {
+			flag = true
+		}
+		ss.numberOfPutLock[request.Key].Unlock()
+		if flag {
+			tmp := append(ss.keyClientLeaseMap[request.Key], hasLeaseClient{leaseTime: time.Now(), hostport: request.HostPort})
+			ss.keyClientLeaseMap[request.Key] = tmp
+			re.Lease.Granted = true
+			re.Lease.ValidSeconds = storagerpc.LeaseSeconds
+		} else {
+			re.Lease.Granted = false
+		}
 	}
 
 	ss.cacheLocks[request.Key].Unlock()
@@ -490,14 +540,20 @@ func deleteRequestFunc(ss *storageServer, deleteRequest *storagerpc.DeleteArgs) 
 
 	ss.lock.Unlock()
 	ss.cacheLocks[deleteRequest.Key].Lock()
-
-	sendRevokeLease(ss, deleteRequest.Key)
 	delete(ss.clients, deleteRequest.Key)
-	//delete(ss.tribblers, deleteRequest.Key)
-	re := storagerpc.DeleteReply{Status: storagerpc.OK}
+	ss.numberOfPutLock[deleteRequest.Key].Lock()
+	ss.numberOfPut[deleteRequest.Key] ++
+	ss.numberOfPutLock[deleteRequest.Key].Unlock()
 	ss.cacheLocks[deleteRequest.Key].Unlock()
 
+	//delete(ss.tribblers, deleteRequest.Key)
+	re := storagerpc.DeleteReply{Status: storagerpc.OK}
+	sendRevokeLease(ss, deleteRequest.Key)
+	ss.numberOfPutLock[deleteRequest.Key].Lock()
+	ss.numberOfPut[deleteRequest.Key] --
+	ss.numberOfPutLock[deleteRequest.Key].Unlock()
 	LOGF.Printf("delete finish 3")
+
 	return &re
 }
 
@@ -538,16 +594,22 @@ func deleteListRequestFunc(ss *storageServer, deleteListRequest *storagerpc.PutA
 
 	ss.lock.Unlock()
 	ss.cacheLocks[deleteListRequest.Key].Lock()
-	sendRevokeLease(ss, deleteListRequest.Key)
 
 	for e := ss.tribblers[deleteListRequest.Key].Front(); e != nil; e = e.Next() {
 		if e.Value == deleteListRequest.Value {
 			ss.tribblers[deleteListRequest.Key].Remove(e)
 		}
 	}
-
-	re := storagerpc.PutReply{Status: storagerpc.OK}
+	ss.numberOfPutLock[deleteListRequest.Key].Lock()
+	ss.numberOfPut[deleteListRequest.Key] ++
+	ss.numberOfPutLock[deleteListRequest.Key].Unlock()
 	ss.cacheLocks[deleteListRequest.Key].Unlock()
+
+	sendRevokeLease(ss, deleteListRequest.Key)
+	re := storagerpc.PutReply{Status: storagerpc.OK}
+	ss.numberOfPutLock[deleteListRequest.Key].Lock()
+	ss.numberOfPut[deleteListRequest.Key] --
+	ss.numberOfPutLock[deleteListRequest.Key].Unlock()
 	LOGF.Printf("delete list finish 4")
 	return &re
 }
