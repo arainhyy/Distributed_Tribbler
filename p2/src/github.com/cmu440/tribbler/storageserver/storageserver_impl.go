@@ -22,7 +22,9 @@ type hasLeaseClient struct {
 
 type storageServer struct {
 	nodeID               uint32
+	lowerBound           uint32
 	upperBound           uint32
+
 	numNodes             int
 	nodes                []storagerpc.Node
 	nodeIndex            int
@@ -33,6 +35,7 @@ type storageServer struct {
 	tribblers            map[string]*list.List
 
 	lock                 *sync.Mutex
+	serverLock           *sync.Mutex
 	cacheLocks           map[string]*sync.Mutex
 	keyClientLeaseMap    map[string][]hasLeaseClient
 }
@@ -50,18 +53,22 @@ var LOGF *log.Logger
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
 
 	newStorageServer := new(storageServer)
+	newStorageServer.lock = &sync.Mutex{}
+	newStorageServer.lock.Lock()
+	newStorageServer.serverLock = &sync.Mutex{}
+
 	newStorageServer.cacheLocks = make(map[string]*sync.Mutex)
 	newStorageServer.keyClientLeaseMap = make(map[string][]hasLeaseClient)
 	newStorageServer.clients = make(map[string]string)
 	newStorageServer.tribblers = make(map[string]*list.List)
 
 	newStorageServer.nodeID = nodeID
-	newStorageServer.upperBound = 4294967295
+	newStorageServer.upperBound = nodeID
+	newStorageServer.lowerBound = 0
+	//newStorageServer.lowerBound = 4294967295
 	newStorageServer.masterServerHostPort = masterServerHostPort
 	newStorageServer.numNodes = numNodes
 	newStorageServer.port = port
-
-	newStorageServer.lock = &sync.Mutex{}
 
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -74,9 +81,8 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	rpc.HandleHTTP()
 	go http.Serve(listener, nil)
 
-	initRegister(masterServerHostPort, newStorageServer, numNodes, port, nodeID)
-
-	go storageServerRoutine(newStorageServer)
+	go storageServerRoutine(newStorageServer,masterServerHostPort, newStorageServer, numNodes, port, nodeID)
+	println("finish")
 
 	return newStorageServer, nil
 }
@@ -87,8 +93,15 @@ func initRegister(masterServerHostPort string, newStorageServer *storageServer, 
 		newStorageServer.nodes[0].HostPort = fmt.Sprintf(":%d", port)
 		newStorageServer.nodes[0].NodeID = nodeID
 		newStorageServer.nodeIndex = 1
+		if numNodes == 1 {
+			newStorageServer.lock.Unlock()
+			newStorageServer.lowerBound = newStorageServer.upperBound + 1
+		}
+
+		println("init master")
 
 	} else {
+		println("init slave")
 		var cli *rpc.Client
 		var err error
 		for {
@@ -104,12 +117,31 @@ func initRegister(masterServerHostPort string, newStorageServer *storageServer, 
 			var reply storagerpc.RegisterReply
 			err = cli.Call("StorageServer.RegisterServer", args, &reply)
 			if reply.Status == storagerpc.OK {
+				newStorageServer.numNodes = len(reply.Servers)
+				newStorageServer.nodes = reply.Servers
+				max := newStorageServer.upperBound
+				for i := 0; i < len(newStorageServer.nodes); i++ {
+					//LOGF.Printf("server %d : nodeID: %d, hostport : %s", i, newStorageServer.nodes[i].NodeID, newStorageServer.nodes[i].HostPort)
+					if newStorageServer.nodes[i].NodeID < newStorageServer.upperBound &&
+						newStorageServer.nodes[i].NodeID > newStorageServer.lowerBound {
+						newStorageServer.lowerBound = newStorageServer.nodes[i].NodeID + 1
+					}
+					if newStorageServer.nodes[i].NodeID > max {
+						max = newStorageServer.nodes[i].NodeID
+					}
+				}
+				if newStorageServer.lowerBound == 0 {
+					newStorageServer.lowerBound = max + 1
+				}
+				//LOGF.Printf("server %d : nodeID: %d, hostport : %s, lowerBound: %d, upperBound: %d", newStorageServer.nodeID, newStorageServer.port, newStorageServer.lowerBound, newStorageServer.upperBound)
 				break
 			} else {
 				time.Sleep(1000 * time.Millisecond)
 			}
 		}
+		newStorageServer.lock.Unlock()
 	}
+
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
@@ -169,22 +201,25 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 	return nil
 }
 
-func storageServerRoutine(ss *storageServer) {
-	if len(ss.masterServerHostPort) == 0 {
-		const (
-			name = "log.txt"
-			flag = os.O_RDWR | os.O_CREATE
-			perm = os.FileMode(0666)
-		)
+func storageServerRoutine(ss *storageServer, masterServerHostPort string, newStorageServer *storageServer, numNodes, port int, nodeID uint32) {
+	const (
+		name = "log.txt"
+		//
+		flag = os.O_APPEND|os.O_WRONLY
+		//flag = os.O_RDWR | os.O_CREATE
+		perm = os.FileMode(0666)
+	)
 
-		file, _ := os.OpenFile(name, flag, perm)
+	file, _ := os.OpenFile(name, flag, perm)
 
-		defer file.Close()
+	defer file.Close()
 
-		LOGF = log.New(file, "", log.Lshortfile | log.Lmicroseconds)
-		LOGF.Printf("NewStorageServer")
-		LOGF.Printf("numNodes : %d", ss.numNodes)
-	}
+	LOGF = log.New(file, "", log.Lshortfile | log.Lmicroseconds)
+	LOGF.Printf("NewStorageServer")
+	LOGF.Printf("numNodes : %d", ss.numNodes)
+
+	initRegister(masterServerHostPort, newStorageServer, numNodes, port, nodeID)
+
 	for {
 		select {
 
@@ -195,7 +230,7 @@ func storageServerRoutine(ss *storageServer) {
 func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs) *storagerpc.RegisterReply {
 
 	LOGF.Print("add Server")
-	ss.lock.Lock()
+	ss.serverLock.Lock()
 	alreadyRegistered := false
 	for i := 0; i < ss.nodeIndex; i++ {
 		if ss.nodes[i].NodeID == addServerRequest.ServerInfo.NodeID {
@@ -203,13 +238,19 @@ func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs)
 			break
 		}
 	}
+	LOGF.Print("here")
 	if !alreadyRegistered {
 		ss.nodes[ss.nodeIndex].NodeID = addServerRequest.ServerInfo.NodeID
 		ss.nodes[ss.nodeIndex].HostPort = addServerRequest.ServerInfo.HostPort
 		ss.nodeIndex++
 		LOGF.Printf("register one ")
+		LOGF.Printf("nodeIndex %d, numNodes %d", ss.nodeIndex, ss.numNodes)
+		if ss.nodeIndex == ss.numNodes{
+			ss.lock.Unlock()
+		}
 	}
 
+	LOGF.Print("here1")
 	re := storagerpc.RegisterReply{}
 	re.Servers = ss.nodes
 	if ss.nodeIndex >= ss.numNodes {
@@ -217,21 +258,22 @@ func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs)
 	} else {
 		re.Status = storagerpc.NotReady
 	}
-	min := uint32(4294967295)
+
+	max := ss.upperBound
 	for i := 0; i < len(ss.nodes); i++ {
 		LOGF.Printf("server %d : nodeID: %d, hostport : %s", i, ss.nodes[i].NodeID, ss.nodes[i].HostPort)
 		if ss.nodes[i].NodeID < ss.upperBound &&
-			ss.nodes[i].NodeID > ss.nodeID {
-			ss.upperBound = ss.nodes[i].NodeID - 1
+			ss.nodes[i].NodeID > ss.lowerBound {
+			ss.lowerBound = ss.nodes[i].NodeID + 1
 		}
-		if ss.nodes[i].NodeID < min {
-			min = ss.nodes[i].NodeID
+		if ss.nodes[i].NodeID > max {
+			max = ss.nodes[i].NodeID
 		}
 	}
-	if ss.upperBound == 4294967295 {
-		ss.upperBound = min - 1
+	if ss.lowerBound == 0 {
+		ss.lowerBound = max + 1
 	}
-	ss.lock.Unlock()
+	ss.serverLock.Unlock()
 	LOGF.Printf("add Server finish")
 	return &re
 }
@@ -239,29 +281,31 @@ func addServerFunc(ss *storageServer, addServerRequest *storagerpc.RegisterArgs)
 func getServerFunc(ss *storageServer, getServerRequest *storagerpc.GetServersArgs) *storagerpc.GetServersReply {
 
 	LOGF.Printf("get Server")
-	ss.lock.Lock()
+	ss.serverLock.Lock()
 	// getServerRequest is empty
 	re := storagerpc.GetServersReply{}
 	re.Servers = ss.nodes
 	if ss.nodeIndex == ss.numNodes {
 		re.Status = storagerpc.OK
+		LOGF.Printf("get Server OK!!!!!!!!")
 
 	} else {
 		re.Status = storagerpc.NotReady
 	}
-	ss.lock.Unlock()
+	ss.serverLock.Unlock()
 	LOGF.Printf("get Server finish")
 	return &re
 }
 
 func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs) *storagerpc.PutReply {
 	LOGF.Printf("put, key is %s", putRequest.Key)
+	println("put")
 	ss.lock.Lock()
-
+	println("put1")
 	hashVal := libstore.StoreHash(putRequest.Key)
-	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
-		(hashVal > ss.upperBound && hashVal < ss.nodeID) {
-		LOGF.Printf("WrongServer, lowerBound: %d, key: %d, upperBound: %d", ss.nodeID, hashVal, ss.upperBound)
+	if (ss.upperBound > ss.lowerBound && (hashVal < ss.lowerBound || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.lowerBound) {
+		LOGF.Printf("WrongServer, lowerBound: %d, key: %d, upperBound: %d", ss.lowerBound, hashVal, ss.upperBound)
 		re := storagerpc.PutReply{Status: storagerpc.WrongServer}
 		ss.lock.Unlock()
 		return &re
@@ -287,6 +331,7 @@ func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs) *storager
 	ss.clients[putRequest.Key] = putRequest.Value
 	LOGF.Printf("put finish, key is %s, new value is %s", putRequest.Key, putRequest.Value)
 	ss.cacheLocks[putRequest.Key].Unlock()
+
 	return &re
 
 }
@@ -295,8 +340,9 @@ func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs) *storage
 	LOGF.Println("append to list ", request.Value)
 	ss.lock.Lock()
 	hashVal := libstore.StoreHash(request.Key)
-	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
-		(hashVal > ss.upperBound && hashVal < ss.nodeID) {
+	if (ss.upperBound > ss.lowerBound && (hashVal < ss.lowerBound || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.lowerBound) {
+		LOGF.Printf("WrongServer, lowerBound: %d, key: %d, upperBound: %d", ss.lowerBound, hashVal, ss.upperBound)
 		re := storagerpc.PutReply{Status: storagerpc.WrongServer}
 		ss.lock.Unlock()
 		LOGF.Println("append to list finish 1")
@@ -341,8 +387,9 @@ func getRequestFunc(ss *storageServer, request *storagerpc.GetArgs) *storagerpc.
 	LOGF.Printf("get, key is %s", request.Key)
 	ss.lock.Lock()
 	hashVal := libstore.StoreHash(request.Key)
-	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
-		(hashVal > ss.upperBound && hashVal < ss.nodeID) {
+	if (ss.upperBound > ss.lowerBound && (hashVal < ss.lowerBound || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.lowerBound) {
+		LOGF.Printf("WrongServer, lowerBound: %d, key: %d, upperBound: %d", ss.lowerBound, hashVal, ss.upperBound)
 		re := storagerpc.GetReply{Status: storagerpc.WrongServer}
 		ss.lock.Unlock()
 		LOGF.Printf("get finish 1")
@@ -380,8 +427,9 @@ func getListRequestFunc(ss *storageServer, request *storagerpc.GetArgs) *storage
 	LOGF.Printf("get, key is %s", request.Key)
 	ss.lock.Lock()
 	hashVal := libstore.StoreHash(request.Key)
-	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
-		(hashVal > ss.upperBound && hashVal < ss.nodeID) {
+	if (ss.upperBound > ss.lowerBound && (hashVal < ss.lowerBound || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.lowerBound) {
+		LOGF.Printf("WrongServer, lowerBound: %d, key: %d, upperBound: %d", ss.lowerBound, hashVal, ss.upperBound)
 		re := storagerpc.GetListReply{Status: storagerpc.WrongServer}
 		ss.lock.Unlock()
 		LOGF.Printf("get list finish 1")
@@ -424,8 +472,9 @@ func deleteRequestFunc(ss *storageServer, deleteRequest *storagerpc.DeleteArgs) 
 	ss.lock.Lock()
 
 	hashVal := libstore.StoreHash(deleteRequest.Key)
-	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
-		(hashVal > ss.upperBound && hashVal < ss.nodeID) {
+	if (ss.upperBound > ss.lowerBound && (hashVal < ss.lowerBound || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.lowerBound) {
+		LOGF.Printf("WrongServer, lowerBound: %d, key: %d, upperBound: %d", ss.lowerBound, hashVal, ss.upperBound)
 		re := storagerpc.DeleteReply{Status: storagerpc.WrongServer}
 		ss.lock.Unlock()
 		LOGF.Printf("delete finish 1")
@@ -457,8 +506,9 @@ func deleteListRequestFunc(ss *storageServer, deleteListRequest *storagerpc.PutA
 	ss.lock.Lock()
 
 	hashVal := libstore.StoreHash(deleteListRequest.Key)
-	if (ss.upperBound < ss.nodeID && (hashVal < ss.nodeID || hashVal > ss.upperBound)) ||
-		(hashVal > ss.upperBound && hashVal < ss.nodeID) {
+	if (ss.upperBound > ss.lowerBound && (hashVal < ss.lowerBound || hashVal > ss.upperBound)) ||
+		(hashVal > ss.upperBound && hashVal < ss.lowerBound) {
+		LOGF.Printf("WrongServer, lowerBound: %d, key: %d, upperBound: %d", ss.lowerBound, hashVal, ss.upperBound)
 		re := storagerpc.PutReply{Status: storagerpc.WrongServer}
 		ss.lock.Unlock()
 		LOGF.Printf("delete list finish 1")
