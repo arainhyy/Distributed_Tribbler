@@ -42,14 +42,10 @@ type storageServer struct {
 	keyClientLeaseMapForList  map[string][]hasLeaseClient
 
 	numberOfPut               map[string]int
-	numberOfPutLock           map[string]*sync.Mutex
 	numberOfPutForList        map[string]int
-	numberOfPutLockForList    map[string]*sync.Mutex
 
 	changeOrder               map[string]*list.List
 	changeListOrder           map[string]*list.List
-	modifyChangeOrderLock     map[string]*sync.Mutex
-	modifyChangeListOrderLock map[string]*sync.Mutex
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -77,16 +73,12 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 
 	newStorageServer.numberOfPut = make(map[string]int)
 	newStorageServer.numberOfPutForList = make(map[string]int)
-	newStorageServer.numberOfPutLock = make(map[string]*sync.Mutex)
-	newStorageServer.numberOfPutLockForList = make(map[string]*sync.Mutex)
 
 	newStorageServer.clients = make(map[string]string)
 	newStorageServer.tribblers = make(map[string]*list.List)
 
 	newStorageServer.changeOrder = make(map[string]*list.List)
 	newStorageServer.changeListOrder = make(map[string]*list.List)
-	newStorageServer.modifyChangeOrderLock = make(map[string]*sync.Mutex)
-	newStorageServer.modifyChangeListOrderLock = make(map[string]*sync.Mutex)
 
 	newStorageServer.nodeID = nodeID
 	newStorageServer.upperBound = nodeID
@@ -342,7 +334,6 @@ func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs, operation
 		ss.operationLocks[putRequest.Key] = &sync.Mutex{}
 		ss.keyClientLeaseMap[putRequest.Key] = make([]hasLeaseClient, 0)
 		ss.numberOfPut[putRequest.Key] = 0
-		ss.numberOfPutLock[putRequest.Key] = &sync.Mutex{}
 	}
 	mutexTmp := ss.operationLocks[putRequest.Key]
 	ss.lock.Unlock()
@@ -385,7 +376,6 @@ func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs, operatio
 		ss.operationLocksForList[request.Key] = &sync.Mutex{}
 		ss.keyClientLeaseMapForList[request.Key] = make([]hasLeaseClient, 0)
 		ss.numberOfPutForList[request.Key] = 0
-		ss.numberOfPutLockForList[request.Key] = &sync.Mutex{}
 	}
 	mutexTmp := ss.operationLocksForList[request.Key]
 	ss.lock.Unlock()
@@ -732,76 +722,54 @@ func isWrongServer(ss *storageServer, key string) bool {
 
 func addPutNumberForKey(ss *storageServer, key string) {
 	ss.lock.Lock()
-	mutexTmp := ss.numberOfPutLock[key]
-	ss.lock.Unlock()
-
-	mutexTmp.Lock()
 	ss.numberOfPut[key] ++
-	mutexTmp.Unlock()
+	ss.lock.Unlock()
 }
 
 func addPutNumberForKeyForList(ss *storageServer, key string) {
 	ss.lock.Lock()
-	mutexTmp := ss.numberOfPutLockForList[key]
+	ss.numberOfPutForList[key] ++
 	ss.lock.Unlock()
 
-	mutexTmp.Lock()
-	ss.numberOfPutForList[key] ++
-	mutexTmp.Unlock()
 }
 
 func subPutNumberForKey(ss *storageServer, key string) {
 	ss.lock.Lock()
-	mutexTmp := ss.numberOfPutLock[key]
-	ss.lock.Unlock()
-
-	mutexTmp.Lock()
 	ss.numberOfPut[key] --
-	mutexTmp.Unlock()
+	ss.lock.Unlock()
 }
 
 func subPutNumberForKeyForList(ss *storageServer, key string) {
 	ss.lock.Lock()
-	mutexTmp := ss.numberOfPutLockForList[key]
-	ss.lock.Unlock()
-
-	mutexTmp.Lock()
 	ss.numberOfPutForList[key] --
-	mutexTmp.Unlock()
+	ss.lock.Unlock()
 }
 
 func putNumberForKeyIsZero(ss *storageServer, key string) bool {
 	re := false
 	ss.lock.Lock()
-	mutexTmp := ss.numberOfPutLock[key]
-	ss.lock.Unlock()
-
-	mutexTmp.Lock()
 	if ss.numberOfPut[key] == 0 {
 		re = true
 	}
-	mutexTmp.Unlock()
+	ss.lock.Unlock()
+
 	return re
 }
 
 func putNumberForKeyIsZeroForList(ss *storageServer, key string) bool {
 	re := false
 	ss.lock.Lock()
-	mutexTmp := ss.numberOfPutLockForList[key]
-	ss.lock.Unlock()
-
-	mutexTmp.Lock()
 	if ss.numberOfPutForList[key] == 0 {
 		re = true
 	}
-	mutexTmp.Unlock()
+	ss.lock.Unlock()
+
 	return re
 }
 
 func initchangeOrderforKey(ss *storageServer, key string) {
 	if _, ok := ss.changeOrder[key]; !ok {
 		ss.changeOrder[key] = list.New()
-		ss.modifyChangeOrderLock[key] = &sync.Mutex{}
 	}
 	ss.lock.Unlock()
 }
@@ -809,76 +777,51 @@ func initchangeOrderforKey(ss *storageServer, key string) {
 func initchangeListOrderforKey(ss *storageServer, key string) {
 	if _, ok := ss.changeListOrder[key]; !ok {
 		ss.changeListOrder[key] = list.New()
-		ss.modifyChangeListOrderLock[key] = &sync.Mutex{}
 	}
 	ss.lock.Unlock()
 }
 
 func addToChangeOrder(ss *storageServer, key string, curTime time.Time) {
 	ss.lock.Lock()
-	mutexTmp := ss.modifyChangeOrderLock[key]
-	ss.lock.Unlock()
-
-	mutexTmp.Lock()
 	ss.changeOrder[key].PushBack(curTime)
-	mutexTmp.Unlock()
-}
-
-func deleteFirstInChangeOrder(ss *storageServer, key string) {
-	ss.lock.Lock()
-	mutexTmp := ss.modifyChangeOrderLock[key]
 	ss.lock.Unlock()
-
-	mutexTmp.Lock()
-	ss.changeOrder[key].Remove(ss.changeOrder[key].Front())
-	mutexTmp.Unlock()
 }
 
 func addToChangeListOrder(ss *storageServer, key string, curTime time.Time) {
 	ss.lock.Lock()
-	mutexTmp := ss.modifyChangeListOrderLock[key]
-	ss.lock.Unlock()
-
-	mutexTmp.Lock()
 	ss.changeListOrder[key].PushBack(curTime)
-	mutexTmp.Unlock()
+	ss.lock.Unlock()
+}
+
+func deleteFirstInChangeOrder(ss *storageServer, key string) {
+	ss.lock.Lock()
+	ss.changeOrder[key].Remove(ss.changeOrder[key].Front())
+	ss.lock.Unlock()
 }
 
 func deleteFirstInChangeListOrder(ss *storageServer, key string) {
 	ss.lock.Lock()
-	mutexTmp := ss.modifyChangeListOrderLock[key]
-	ss.lock.Unlock()
-
-	mutexTmp.Lock()
 	ss.changeListOrder[key].Remove(ss.changeListOrder[key].Front())
-	mutexTmp.Unlock()
+	ss.lock.Unlock()
 }
 
 func isFirstInChangeOrder(ss *storageServer, key string, timeTmp time.Time) bool {
 	re := false
 	ss.lock.Lock()
-	mutexTmp := ss.modifyChangeOrderLock[key]
-	ss.lock.Unlock()
-
-	mutexTmp.Lock()
 	if timeTmp.Equal(ss.changeOrder[key].Front().Value.(time.Time)) {
 		re = true
 	}
-	mutexTmp.Unlock()
+	ss.lock.Unlock()
 	return re
 }
 
 func isFirstInChangeListOrder(ss *storageServer, key string, timeTmp time.Time) bool {
 	re := false
 	ss.lock.Lock()
-	mutexTmp := ss.modifyChangeListOrderLock[key]
-	ss.lock.Unlock()
-
-	mutexTmp.Lock()
 	if timeTmp.Equal(ss.changeListOrder[key].Front().Value.(time.Time)) {
 		re = true
 	}
-	mutexTmp.Unlock()
+	ss.lock.Unlock()
 	return re
 }
 
