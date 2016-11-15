@@ -13,6 +13,7 @@ import (
 	"time"
 	"sync"
 	"github.com/cmu440/tribbler/libstore"
+	//"sort"
 )
 
 type hasLeaseClient struct {
@@ -175,58 +176,70 @@ func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *stor
 }
 
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
+	LOGF.Printf("!!GET")
 	replyTmp := getRequestFunc(ss, args)
 	reply.Status = replyTmp.Status
 	reply.Lease = replyTmp.Lease
 	reply.Value = replyTmp.Value
+	LOGF.Printf("!!GET FINISH")
 	return nil
 }
 
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
+	LOGF.Printf("!!GET LIST")
 	replyTmp := getListRequestFunc(ss, args)
 	reply.Status = replyTmp.Status
 	reply.Value = replyTmp.Value
 	reply.Lease = replyTmp.Lease
+	LOGF.Printf("!!GET LIST FINISH")
 	return nil
 }
 
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 	curTime := time.Now()
+	LOGF.Printf("!!PUT")
 	ss.lock.Lock()
 	initchangeOrderforKey(ss, args.Key)
 	addToChangeOrder(ss, args.Key, curTime)
 	replyTmp := putRequestFunc(ss, args, curTime)
 	reply.Status = replyTmp.Status
+	LOGF.Printf("!!PUT FINISH")
 	return nil
 }
 
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 	curTime := time.Now()
+	LOGF.Printf("!!APPEND TO LIST")
 	ss.lock.Lock()
 	initchangeListOrderforKey(ss, args.Key)
 	addToChangeListOrder(ss, args.Key, curTime)
 	replyTmp := putListRequestFunc(ss, args, curTime)
 	reply.Status = replyTmp.Status
+	LOGF.Printf("!!APPEND TO LIST FINISH")
 	return nil
 }
 
 func (ss *storageServer) Delete(args *storagerpc.DeleteArgs, reply *storagerpc.DeleteReply) error {
 	curTime := time.Now()
+	LOGF.Printf("!!DELETE")
 	ss.lock.Lock()
 	initchangeOrderforKey(ss, args.Key)
 	addToChangeOrder(ss, args.Key, curTime)
 	replyTmp := deleteRequestFunc(ss, args, curTime)
 	reply.Status = replyTmp.Status
+	LOGF.Printf("!!DELETE FINISH")
 	return nil
 }
 
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 	curTime := time.Now()
+	LOGF.Printf("!!REMOVE FROM LIST")
 	ss.lock.Lock()
 	initchangeListOrderforKey(ss, args.Key)
 	addToChangeListOrder(ss, args.Key, curTime)
 	replyTmp := deleteListRequestFunc(ss, args, curTime)
 	reply.Status = replyTmp.Status
+	LOGF.Printf("!!REMOVE FROM LIST FINISH")
 	return nil
 }
 
@@ -326,6 +339,7 @@ func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs, operation
 		LOGF.Printf("put finish, WrongServer, key: {%s}, lowerBound: %d, key: %d, upperBound: %d", putRequest.Key, ss.lowerBound, libstore.StoreHash(putRequest.Key), ss.upperBound)
 		re := storagerpc.PutReply{Status: storagerpc.WrongServer}
 		ss.lock.Unlock()
+		deleteFirstInChangeOrder(ss, putRequest.Key)
 		return &re
 	}
 
@@ -362,13 +376,14 @@ func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs, operation
 }
 
 func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs, operationTime time.Time) *storagerpc.PutReply {
-	LOGF.Println("append to list key is {%s}", request.Value)
+	LOGF.Printf("append to list, key: {%s}", request.Key)
 	ss.lock.Lock()
 
 	if isWrongServer(ss, request.Key) {
 		LOGF.Printf("append to list finish, WrongServer, key: {%s}, lowerBound: %d, key: %d, upperBound: %d", request.Key, ss.lowerBound, libstore.StoreHash(request.Key), ss.upperBound)
 		re := storagerpc.PutReply{Status: storagerpc.WrongServer}
 		ss.lock.Unlock()
+		deleteFirstInChangeListOrder(ss, request.Key)
 		return &re
 	}
 	if _, ok := ss.operationLocksForList[request.Key]; !ok {
@@ -376,15 +391,18 @@ func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs, operatio
 		ss.operationLocksForList[request.Key] = &sync.Mutex{}
 		ss.keyClientLeaseMapForList[request.Key] = make([]hasLeaseClient, 0)
 		ss.numberOfPutForList[request.Key] = 0
+
+		ss.tribblers[request.Key] = list.New()
 	}
 	mutexTmp := ss.operationLocksForList[request.Key]
 	ss.lock.Unlock()
-
+	LOGF.Println("append to list key, here1")
 	operationLockUntilIsFirstForList(ss, request.Key, operationTime)
 
-	if _, ok := ss.tribblers[request.Key]; !ok {
+	/*if _, ok := ss.tribblers[request.Key]; !ok {
 		ss.tribblers[request.Key] = list.New()
-	}
+	}*/
+	LOGF.Println("append to list key, here2")
 	flag := false
 	for e := ss.tribblers[request.Key].Front(); e != nil; e = e.Next() {
 		if e.Value == request.Value {
@@ -396,21 +414,22 @@ func putListRequestFunc(ss *storageServer, request *storagerpc.PutArgs, operatio
 		re := storagerpc.PutReply{Status: storagerpc.ItemExists}
 		mutexTmp.Unlock()
 		deleteFirstInChangeListOrder(ss, request.Key)
-		LOGF.Println("append to list finish, ItemExsits, key: {%s}, value: {%s}", request.Key, request.Value)
+		LOGF.Printf("append to list finish, ItemExsits, key: {%s}, value: {%s}", request.Key, request.Value)
 		return &re
 	}
+	LOGF.Println("append to list key, here3")
 	mutexTmp.Unlock()
 
 	addPutNumberForKeyForList(ss, request.Key)
-
+	LOGF.Println("append to list key, here3.5")
 	sendRevokeLeaseForList(ss, request.Key)
-
+	LOGF.Println("append to list key, here4")
 	operationLockUntilIsFirstForList(ss, request.Key, operationTime)
 
 	deleteFirstInChangeListOrder(ss, request.Key)
 
 	ss.tribblers[request.Key].PushFront(request.Value)
-	LOGF.Println("append to list finish, key is {%s}, value is {%s}", request.Key, request.Value)
+	LOGF.Printf("append to list finish, key is {%s}, value is {%s}", request.Key, request.Value)
 	mutexTmp.Unlock()
 
 	subPutNumberForKeyForList(ss, request.Key)
@@ -525,11 +544,13 @@ func deleteRequestFunc(ss *storageServer, deleteRequest *storagerpc.DeleteArgs, 
 		LOGF.Printf("delete finish, WrongServer, key: {%s}, lowerBound: %d, key: %d, upperBound: %d", deleteRequest.Key, ss.lowerBound, libstore.StoreHash(deleteRequest.Key), ss.upperBound)
 		re := storagerpc.DeleteReply{Status: storagerpc.WrongServer}
 		ss.lock.Unlock()
+		deleteFirstInChangeOrder(ss, deleteRequest.Key)
 		return &re
 	}
 	if _, ok := ss.operationLocks[deleteRequest.Key]; !ok {
 		re := storagerpc.DeleteReply{Status: storagerpc.KeyNotFound}
 		ss.lock.Unlock()
+		deleteFirstInChangeOrder(ss, deleteRequest.Key)
 		LOGF.Printf("delete finish, KeyNotFound, key: {%s}", deleteRequest.Key)
 		return &re
 	}
@@ -569,11 +590,13 @@ func deleteListRequestFunc(ss *storageServer, deleteListRequest *storagerpc.PutA
 		LOGF.Printf("deleteList finish, WrongServer, key: {%s}, lowerBound: %d, key: %d, upperBound: %d", deleteListRequest.Key, ss.lowerBound, libstore.StoreHash(deleteListRequest.Key), ss.upperBound)
 		re := storagerpc.PutReply{Status: storagerpc.WrongServer}
 		ss.lock.Unlock()
+		deleteFirstInChangeListOrder(ss, deleteListRequest.Key)
 		return &re
 	}
 	if _, ok := ss.operationLocksForList[deleteListRequest.Key]; !ok {
 		re := storagerpc.PutReply{Status: storagerpc.KeyNotFound}
 		ss.lock.Unlock()
+		deleteFirstInChangeListOrder(ss, deleteListRequest.Key)
 		LOGF.Printf("deleteList finish, KeyNotFound, key: {%s}", deleteListRequest.Key)
 		return &re
 	}
@@ -629,15 +652,15 @@ func sendRevokeLease(ss *storageServer, key string) {
 	revokeSize := len(keyClientLeaseMapTmp)
 	LOGF.Printf("Revoke Begin, number of revoke: %d, key: {%s}", revokeSize, key)
 
+	chanTmp = make(chan bool, 100)
 	for i := 0; i < revokeSize; i++ {
 		leaseTmp := keyClientLeaseMapTmp[i]
-		chanTmp = make(chan bool, 100)
 		timeNow := time.Now()
 		go receiveAMessage(key, leaseTmp, chanTmp, timeNow)
-
 	}
 	for i := 0; i < revokeSize; i++ {
-		<-chanTmp
+		LOGF.Println("@@@@@@@@@@receive: ", i)
+		<- chanTmp
 	}
 	LOGF.Printf("revoke finish, key: {%s}", key)
 	ss.lock.Lock()
@@ -652,11 +675,13 @@ func sendRevokeLeaseForList(ss *storageServer, key string) {
 
 	var chanTmp chan bool
 	revokeSize := len(keyClientLeaseMapTmp)
+	testtime := time.Now()
 	LOGF.Printf("Revoke Begin, number of revoke: %d, key: {%s}", revokeSize, key)
+	LOGF.Println("Revoke Time: ", testtime)
 
+	chanTmp = make(chan bool, 100)
 	for i := 0; i < revokeSize; i++ {
 		leaseTmp := keyClientLeaseMapTmp[i]
-		chanTmp = make(chan bool, 100)
 		timeNow := time.Now()
 		go receiveAMessage(key, leaseTmp, chanTmp, timeNow)
 
@@ -665,6 +690,7 @@ func sendRevokeLeaseForList(ss *storageServer, key string) {
 		<-chanTmp
 	}
 	LOGF.Printf("revoke finish, key: {%s}", key)
+	LOGF.Println("Revoke Time: ", testtime)
 	ss.lock.Lock()
 	ss.keyClientLeaseMapForList[key] = make([]hasLeaseClient, 0) // clear the lease
 	ss.lock.Unlock()
@@ -678,7 +704,7 @@ func receiveAMessage(key string, leaseTmp hasLeaseClient, chanTmp chan bool, tim
 		return
 	}
 
-	revokeReplyChan := make(chan bool, 1)
+	revokeReplyChan := make(chan bool, 100)
 	go sendARevoke(key, leaseTmp, revokeReplyChan)
 
 	duration := -timeNow.Sub(leaseTmp.leaseTime.Add((storagerpc.LeaseGuardSeconds + storagerpc.LeaseSeconds) * time.Second))
@@ -820,6 +846,8 @@ func isFirstInChangeListOrder(ss *storageServer, key string, timeTmp time.Time) 
 	ss.lock.Lock()
 	if timeTmp.Equal(ss.changeListOrder[key].Front().Value.(time.Time)) {
 		re = true
+	} else {
+		LOGF.Println("Front:", ss.changeListOrder[key].Front().Value.(time.Time), " myOperation: ",timeTmp)
 	}
 	ss.lock.Unlock()
 	return re
@@ -851,7 +879,32 @@ func operationLockUntilIsFirstForList(ss *storageServer, key string, myOperation
 			break
 		} else {
 			mutexTmp.Unlock()
+			time.Sleep(1 * time.Millisecond)
 		}
+
 	}
 }
 
+func lockOperationLock (ss *storageServer, key string) {
+	ss.lock.Lock()
+	ss.operationLocks[key].Lock()
+	ss.lock.Unlock()
+}
+
+func unLockOperationLock (ss *storageServer, key string) {
+	ss.lock.Lock()
+	ss.operationLocks[key].Unlock()
+	ss.lock.Unlock()
+}
+
+func lockOperationLockForList (ss *storageServer, key string) {
+	ss.lock.Lock()
+	ss.operationLocks[key].Lock()
+	ss.lock.Unlock()
+}
+
+func unLockOperationLockForList (ss *storageServer, key string) {
+	ss.lock.Lock()
+	ss.operationLocksForList[key].Unlock()
+	ss.lock.Unlock()
+}
