@@ -659,7 +659,6 @@ func sendRevokeLease(ss *storageServer, key string) {
 		go receiveAMessage(key, leaseTmp, chanTmp, timeNow)
 	}
 	for i := 0; i < revokeSize; i++ {
-		LOGF.Println("@@@@@@@@@@receive: ", i)
 		<- chanTmp
 	}
 	LOGF.Printf("revoke finish, key: {%s}", key)
