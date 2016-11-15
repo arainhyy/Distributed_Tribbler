@@ -6,6 +6,7 @@ import (
 	"github.com/cmu440/tribbler/rpc/librpc"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 	"net/rpc"
+	"sort"
 	"sync"
 	"time"
 )
@@ -21,6 +22,20 @@ type libstore struct {
 	leases               map[string]storagerpc.Lease
 	cache                map[string]interface{}
 	lock                 *sync.Mutex
+}
+
+// ByID implements sort.Interface for []storagerpc.Node based on
+// the ID field.
+type ByID []storagerpc.Node
+
+func (a ByID) Len() int {
+	return len(a)
+}
+func (a ByID) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
+}
+func (a ByID) Less(i, j int) bool {
+	return a[j].NodeID > a[i].NodeID
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -48,12 +63,10 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-	fmt.Println("before dial")
 	cli, err := rpc.DialHTTP("tcp", masterServerHostPort)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println("after dial")
 	libstore := &libstore{client: cli}
 	libstore.myHostPort = myHostPort
 	libstore.masterServerHostPort = masterServerHostPort
@@ -79,15 +92,15 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 		time.Sleep(1000 * time.Millisecond)
 	}
 	libstore.storageServerNodes = reply.Servers
-	upbound := len(libstore.storageServerNodes)
-	i := 1
-	fmt.Println("before try")
-	for i < upbound {
-		node := libstore.storageServerNodes[i]
-		conn, _ := rpc.DialHTTP("tcp", node.HostPort)
-		libstore.connections[node.HostPort] = conn
-	}
-	fmt.Println("after try")
+	sort.Sort(ByID(libstore.storageServerNodes))
+	// upbound := len(libstore.storageServerNodes)
+	// i := 1
+	// fmt.Println("before try")
+	// for i < upbound {
+	// 	node := libstore.storageServerNodes[i]
+	// 	conn, _ := rpc.DialHTTP("tcp", node.HostPort)
+	// 	libstore.connections[node.HostPort] = conn
+	// }
 	//lib := new(librpc.RemoteLeaseCallbacks)
 	rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
 	return libstore, nil
@@ -281,7 +294,7 @@ func (ls *libstore) GetStorageServerConn(key string) *rpc.Client {
 	hashVal := StoreHash(key)
 	hostPort := ls.storageServerNodes[0].HostPort
 	upbound := len(ls.storageServerNodes)
-	i := 1
+	i := 0
 	for i < upbound {
 		node := ls.storageServerNodes[i]
 		if node.NodeID >= hashVal {
@@ -290,5 +303,10 @@ func (ls *libstore) GetStorageServerConn(key string) *rpc.Client {
 		}
 		i++
 	}
-	return ls.connections[hostPort]
+	if conn, ok := ls.connections[hostPort]; ok {
+		return conn
+	}
+	conn, _ := rpc.DialHTTP("tcp", hostPort)
+	ls.connections[hostPort] = conn
+	return conn
 }
