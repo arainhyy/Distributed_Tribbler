@@ -6,6 +6,8 @@ import (
 	"github.com/cmu440/tribbler/rpc/librpc"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 	"net/rpc"
+	"sort"
+	"sync"
 	"time"
 )
 
@@ -15,9 +17,25 @@ type libstore struct {
 	mode                 LeaseMode
 	client               *rpc.Client
 	storageServerNodes   []storagerpc.Node
+	connections          map[string]*rpc.Client
 	queryTimestamps      map[string][]time.Time
 	leases               map[string]storagerpc.Lease
 	cache                map[string]interface{}
+	lock                 *sync.Mutex
+}
+
+// ByID implements sort.Interface for []storagerpc.Node based on
+// the ID field.
+type ByID []storagerpc.Node
+
+func (a ByID) Len() int {
+	return len(a)
+}
+func (a ByID) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
+}
+func (a ByID) Less(i, j int) bool {
+	return a[j].NodeID > a[i].NodeID
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -45,18 +63,20 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-
 	cli, err := rpc.DialHTTP("tcp", masterServerHostPort)
 	if err != nil {
-		return nil, errors.New("fail to Dail HTTP")
+		return nil, err
 	}
 	libstore := &libstore{client: cli}
 	libstore.myHostPort = myHostPort
 	libstore.masterServerHostPort = masterServerHostPort
 	libstore.mode = mode
+	libstore.connections = make(map[string]*rpc.Client)
 	libstore.queryTimestamps = make(map[string][]time.Time)
 	libstore.leases = make(map[string]storagerpc.Lease)
 	libstore.cache = make(map[string]interface{})
+	libstore.lock = &sync.Mutex{}
+	libstore.connections[masterServerHostPort] = cli
 	// Get all storage server nodes.
 	tryTimes := 0
 	args := &storagerpc.GetServersArgs{}
@@ -67,12 +87,20 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 			fmt.Println("reply OK")
 			break
 		}
+		fmt.Println(reply.Status)
 		tryTimes++
 		time.Sleep(1000 * time.Millisecond)
 	}
 	libstore.storageServerNodes = reply.Servers
-	fmt.Println(reply.Servers[0].HostPort, "hostport")
-
+	sort.Sort(ByID(libstore.storageServerNodes))
+	// upbound := len(libstore.storageServerNodes)
+	// i := 1
+	// fmt.Println("before try")
+	// for i < upbound {
+	// 	node := libstore.storageServerNodes[i]
+	// 	conn, _ := rpc.DialHTTP("tcp", node.HostPort)
+	// 	libstore.connections[node.HostPort] = conn
+	// }
 	//lib := new(librpc.RemoteLeaseCallbacks)
 	rpc.RegisterName("LeaseCallbacks", librpc.Wrap(libstore))
 	return libstore, nil
@@ -89,7 +117,7 @@ func (ls *libstore) CheckQueryTimestamp(key string) bool {
 	timestamps, _ := ls.queryTimestamps[key]
 	list := append(timestamps, time.Now())
 	ls.queryTimestamps[key] = list
-
+	// fmt.Println("len list: ", len(list))
 	if len(list) < storagerpc.QueryCacheThresh {
 		return false
 	}
@@ -103,36 +131,48 @@ func (ls *libstore) CheckQueryTimestamp(key string) bool {
 }
 
 func (ls *libstore) DeleteCacheLineWhenTimeout(key string) {
+	ls.lock.Lock()
 	lease := ls.leases[key]
+	ls.lock.Unlock()
 	<-time.After(time.Duration(lease.ValidSeconds) * time.Second)
+	ls.lock.Lock()
 	delete(ls.cache, key)
 	delete(ls.leases, key)
+	ls.lock.Unlock()
 }
 
 func (ls *libstore) Get(key string) (string, error) {
 	// Check cache first.
+	ls.lock.Lock()
 	value, ok := ls.cache[key]
 	if ok {
 		lease, _ := ls.leases[key]
 		if lease.Granted {
+			ls.lock.Unlock()
 			return value.(string), nil
 		}
 	}
-	wantLease := false
+	ls.lock.Unlock()
+	wantLease := ls.CheckQueryTimestamp(key)
 	if ls.mode == Always {
-		wantLease = ls.CheckQueryTimestamp(key)
+		wantLease = true
+	} else if ls.mode == Never {
+		wantLease = false
 	}
-
+	// fmt.Println("wantlease:", wantLease)
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myHostPort}
 	var reply storagerpc.GetReply
-	if err := ls.GetStorageServerConn(key).Call("StorageServer.Get", args, &reply); err != nil {
+	conn := ls.GetStorageServerConn(key)
+	if err := conn.Call("StorageServer.Get", args, &reply); err != nil {
 		return "", err
 	} else if reply.Status == storagerpc.KeyNotFound {
 		return "", errors.New("GET operation failed with KeyNotFound")
 	} else {
 		if wantLease && reply.Lease.Granted {
+			ls.lock.Lock()
 			ls.cache[key] = reply.Value
 			ls.leases[key] = reply.Lease
+			ls.lock.Unlock()
 			go ls.DeleteCacheLineWhenTimeout(key)
 		}
 		return reply.Value, nil
@@ -171,16 +211,21 @@ func (ls *libstore) Delete(key string) error {
 
 func (ls *libstore) GetList(key string) ([]string, error) {
 	// Check cache first.
+	ls.lock.Lock()
 	value, ok := ls.cache[key]
 	if ok {
 		lease, _ := ls.leases[key]
 		if lease.Granted {
+			ls.lock.Unlock()
 			return value.([]string), nil
 		}
 	}
-	wantLease := false
+	ls.lock.Unlock()
+	wantLease := ls.CheckQueryTimestamp(key)
 	if ls.mode == Always {
-		wantLease = ls.CheckQueryTimestamp(key)
+		wantLease = true
+	} else if ls.mode == Never {
+		wantLease = false
 	}
 
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myHostPort}
@@ -195,8 +240,10 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 		return nil, errors.New("GetList operation failed with ItemNotFound")
 	} else {
 		if wantLease && reply.Lease.Granted {
+			ls.lock.Lock()
 			ls.cache[key] = reply.Value
 			ls.leases[key] = reply.Lease
+			ls.lock.Unlock()
 			go ls.DeleteCacheLineWhenTimeout(key)
 		}
 		return reply.Value, nil
@@ -247,7 +294,7 @@ func (ls *libstore) GetStorageServerConn(key string) *rpc.Client {
 	hashVal := StoreHash(key)
 	hostPort := ls.storageServerNodes[0].HostPort
 	upbound := len(ls.storageServerNodes)
-	i := 1
+	i := 0
 	for i < upbound {
 		node := ls.storageServerNodes[i]
 		if node.NodeID >= hashVal {
@@ -256,6 +303,10 @@ func (ls *libstore) GetStorageServerConn(key string) *rpc.Client {
 		}
 		i++
 	}
+	if conn, ok := ls.connections[hostPort]; ok {
+		return conn
+	}
 	conn, _ := rpc.DialHTTP("tcp", hostPort)
+	ls.connections[hostPort] = conn
 	return conn
 }
