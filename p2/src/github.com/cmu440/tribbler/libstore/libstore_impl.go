@@ -225,7 +225,7 @@ func (ls *libstore) Delete(key string) error {
 
 func (ls *libstore) GetList(key string) ([]string, error) {
 	// Check cache first.
-	fmt.Println("GetList", key)
+	//fmt.Println("GetList", key)
 	ls.lock.Lock()
 	value, ok := ls.cache[key]
 	if ok {
@@ -246,16 +246,16 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 	args := &storagerpc.GetArgs{Key: key, WantLease: wantLease, HostPort: ls.myHostPort}
 	var reply storagerpc.GetListReply
 	if err := ls.GetStorageServerConn(key).Call("StorageServer.GetList", args, &reply); err != nil {
-		fmt.Println("GetList finish", key)
+		//fmt.Println("GetList finish", key)
 		return nil, err
 	} else if reply.Status == storagerpc.KeyNotFound {
-		fmt.Println("GetList finish", key)
+		//fmt.Println("GetList finish", key)
 		return nil, errors.New("GetList operation failed with KeyNotFound")
 	} else if reply.Status == storagerpc.WrongServer {
-		fmt.Println("GetList finish", key)
+		//fmt.Println("GetList finish", key)
 		return nil, errors.New("GetList operation failed with WrongServer")
 	} else if reply.Status == storagerpc.ItemNotFound {
-		fmt.Println("GetList finish", key)
+		//fmt.Println("GetList finish", key)
 		return nil, errors.New("GetList operation failed with ItemNotFound")
 	} else {
 		if wantLease && reply.Lease.Granted {
@@ -265,7 +265,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 			ls.lock.Unlock()
 			go ls.DeleteCacheLineWhenTimeout(key)
 		}
-		fmt.Println("GetList finish", key)
+		//fmt.Println("GetList finish", key)
 		return reply.Value, nil
 	}
 }
@@ -276,38 +276,38 @@ func (ls *libstore) RemoveFromList(key, removeItem string) error {
 	var reply storagerpc.PutReply
 
 	if err := ls.GetStorageServerConn(key).Call("StorageServer.RemoveFromList", args, &reply); err != nil {
-		fmt.Println("------error when call StorageServer.RemoveFromList")
-		fmt.Println(err)
-		fmt.Println()
+		//fmt.Println("------error when call StorageServer.RemoveFromList")
+		//fmt.Println(err)
+		//fmt.Println()
 		return err
 	} else if reply.Status == storagerpc.KeyNotFound {
 		return errors.New("RemoveFromList operation failed with KeyNotFound")
 	} else if reply.Status == storagerpc.ItemNotFound {
 		return errors.New("RemoveFromList operation failed with ItemNotFound")
 	} else {
-		fmt.Println("remove from list", key)
+		//fmt.Println("remove from list", key)
 		return nil
 	}
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-	fmt.Println("AppendToList", key)
+	//fmt.Println("AppendToList", key)
 	args := &storagerpc.PutArgs{Key: key, Value: newItem}
 	var reply storagerpc.PutReply
 
 	if err := ls.GetStorageServerConn(key).Call("StorageServer.AppendToList", args, &reply); err != nil {
 		return err
 	} else if reply.Status == storagerpc.KeyNotFound {
-		fmt.Println("AppendToList finish key not found")
+		//fmt.Println("AppendToList finish key not found")
 		return errors.New("AppendToList operation failed with KeyNotFound")
 	} else if reply.Status == storagerpc.ItemNotFound {
-		fmt.Println("AppendToList finish item not found")
+		//fmt.Println("AppendToList finish item not found")
 		return errors.New("AppendToList operation failed with ItemNotFound")
 	} else if reply.Status == storagerpc.ItemExists {
-		fmt.Println("AppendToList finish item exist")
+		//fmt.Println("AppendToList finish item exist")
 		return errors.New("AppendToList operation failed with ItemExists")
 	} else {
-		fmt.Println("AppendToList finish", key)
+		//fmt.Println("AppendToList finish", key)
 		return nil
 	}
 }
@@ -324,7 +324,7 @@ func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storage
 func (ls *libstore) GetStorageServerConn(key string) *rpc.Client {
 	hashVal := StoreHash(key)
 	hostPort := ls.storageServerNodes[0].HostPort
-	println("1hostPort", hostPort, len(ls.storageServerNodes))
+	//println("1hostPort", hostPort, len(ls.storageServerNodes))
 	upbound := len(ls.storageServerNodes)
 	i := 0
 	for i < upbound {
@@ -340,9 +340,10 @@ func (ls *libstore) GetStorageServerConn(key string) *rpc.Client {
 	}
 	conn, err := rpc.DialHTTP("tcp", hostPort)
 	if err != nil {
-		fmt.Println("dial err:", err)	
+		fmt.Println("dial err:", err)
 	}
-	
+	ls.lock.Lock()
 	ls.connections[hostPort] = conn
+	ls.lock.Unlock()
 	return conn
 }

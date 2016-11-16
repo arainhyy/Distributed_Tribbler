@@ -3,7 +3,7 @@ package tribserver
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
+	//"fmt"
 	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/tribrpc"
 	"github.com/cmu440/tribbler/util"
@@ -140,7 +140,7 @@ func (ts *tribServer) GetFriends(args *tribrpc.GetFriendsArgs, reply *tribrpc.Ge
 	}
 	if err != nil {
 		reply.Status = tribrpc.OK
-		fmt.Println("Fail to get friend list of a user: ", id)
+		//fmt.Println("Fail to get friend list of a user: ", id)
 		return nil
 	}
 	reply.Status = tribrpc.OK
@@ -174,18 +174,18 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 	}
 	marshalledTribble, err := json.Marshal(tribble)
 	if err != nil {
-		fmt.Println("Marshal error inside post tribble.")
+		//fmt.Println("Marshal error inside post tribble.")
 	}
 	err = ts.libstore.Put(postID, string(marshalledTribble))
 	if err != nil {
-		fmt.Println("Fail to put marshalled tribble into libstore.")
+		//fmt.Println("Fail to put marshalled tribble into libstore.")
 		return nil
 	}
 	// Put ID of this tribble to tribble list of this user.
 	tribListUserID := util.FormatTribListKey(args.UserID)
 	err = ts.libstore.AppendToList(tribListUserID, postID)
 	if err != nil {
-		fmt.Println("Fail to add new posted tribble to user's list")
+		//fmt.Println("Fail to add new posted tribble to user's list")
 		return nil
 	}
 	reply.Status = tribrpc.OK
@@ -212,7 +212,7 @@ func (ts *tribServer) DeleteTribble(args *tribrpc.DeleteTribbleArgs, reply *trib
 	// Delete post from user post list.
 	err = ts.libstore.RemoveFromList(util.FormatTribListKey(args.UserID), args.PostKey)
 	if err != nil {
-		fmt.Println("Fail to remove tribble", args.PostKey, "from user post list")
+		//fmt.Println("Fail to remove tribble", args.PostKey, "from user post list")
 		return nil
 	}
 	reply.Status = tribrpc.OK
@@ -230,7 +230,7 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	tribbleList, err := ts.libstore.GetList(util.FormatTribListKey(args.UserID))
 	if err != nil {
 		reply.Status = tribrpc.OK
-		fmt.Println("Fail to get tribble list of user", id)
+		//fmt.Println("Fail to get tribble list of user", id)
 		return nil
 	}
 	// Put all tribble of this user into list then sort them by Posted field.
@@ -261,7 +261,7 @@ func (ts *tribServer) GetTopTribbleByUserID(userID string) []tribrpc.Tribble {
 	id := util.FormatTribListKey(userID)
 	tribList, err := ts.libstore.GetList(id)
 	if err != nil {
-		fmt.Println("Fail to get top tribbles by userID", userID)
+		//fmt.Println("Fail to get top tribbles by userID", userID)
 		return nil
 	}
 	// Get tribble from libstore by tribbleID in tribble list of this user. Put it into return list.
@@ -287,7 +287,7 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 	subUserID := util.FormatSubListKey(args.UserID)
 	subUserList, err := ts.libstore.GetList(subUserID)
 	if err != nil {
-		fmt.Println("Fail to get subscription list by user ID, ", subUserID)
+		//fmt.Println("Fail to get subscription list by user ID, ", subUserID)
 		reply.Status = tribrpc.OK
 		return nil
 	}

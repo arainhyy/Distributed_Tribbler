@@ -4,15 +4,15 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
+	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
-	"time"
 	"sync"
-	"github.com/cmu440/tribbler/libstore"
+	"time"
 	//"sort"
 )
 
@@ -22,31 +22,31 @@ type hasLeaseClient struct {
 }
 
 type storageServer struct {
-	nodeID                    uint32
-	lowerBound                uint32
-	upperBound                uint32
+	nodeID     uint32
+	lowerBound uint32
+	upperBound uint32
 
-	numNodes                  int
-	nodes                     []storagerpc.Node
-	nodeIndex                 int
-	masterServerHostPort      string
-	port                      int
+	numNodes             int
+	nodes                []storagerpc.Node
+	nodeIndex            int
+	masterServerHostPort string
+	port                 int
 
-	clients                   map[string]string
-	tribblers                 map[string]*list.List
+	clients   map[string]string
+	tribblers map[string]*list.List
 
-	lock                      *sync.Mutex
-	serverLock                *sync.Mutex
-	operationLocks            map[string]*sync.Mutex
-	operationLocksForList     map[string]*sync.Mutex
-	keyClientLeaseMap         map[string][]hasLeaseClient
-	keyClientLeaseMapForList  map[string][]hasLeaseClient
+	lock                     *sync.Mutex
+	serverLock               *sync.Mutex
+	operationLocks           map[string]*sync.Mutex
+	operationLocksForList    map[string]*sync.Mutex
+	keyClientLeaseMap        map[string][]hasLeaseClient
+	keyClientLeaseMapForList map[string][]hasLeaseClient
 
-	numberOfPut               map[string]int
-	numberOfPutForList        map[string]int
+	numberOfPut        map[string]int
+	numberOfPutForList map[string]int
 
-	changeOrder               map[string]*list.List
-	changeListOrder           map[string]*list.List
+	changeOrder     map[string]*list.List
+	changeListOrder map[string]*list.List
 }
 
 // NewStorageServer creates and starts a new StorageServer. masterServerHostPort
@@ -255,15 +255,13 @@ func storageServerRoutine(ss *storageServer, masterServerHostPort string, newSto
 	file, _ := os.OpenFile(name, flag, perm)
 	defer file.Close()
 
-	LOGF = log.New(file, "", log.Lshortfile | log.Lmicroseconds)
+	LOGF = log.New(file, "", log.Lshortfile|log.Lmicroseconds)
 	LOGF.Printf("NewStorageServer, numNodes : %d", ss.numNodes)
 
 	initRegister(masterServerHostPort, newStorageServer, numNodes, port, nodeID)
 
 	for {
-		select {
-
-		}
+		select {}
 	}
 }
 
@@ -364,8 +362,9 @@ func putRequestFunc(ss *storageServer, putRequest *storagerpc.PutArgs, operation
 	operationLockUntilIsFirst(ss, putRequest.Key, operationTime)
 
 	deleteFirstInChangeOrder(ss, putRequest.Key)
-
+	ss.lock.Lock()
 	ss.clients[putRequest.Key] = putRequest.Value
+	ss.lock.Unlock()
 	LOGF.Printf("put finish, key: {%s}, new value: {%s}", putRequest.Key, putRequest.Value)
 	mutexTmp.Unlock()
 
@@ -461,7 +460,9 @@ func getRequestFunc(ss *storageServer, request *storagerpc.GetArgs) *storagerpc.
 	operationLocksTmp.Lock() // wait for lease can be granted
 
 	re := storagerpc.GetReply{Status: storagerpc.OK}
+	ss.lock.Lock()
 	re.Value = ss.clients[request.Key]
+	ss.lock.Unlock()
 
 	if request.WantLease {
 		canGrantLeaseflag := putNumberForKeyIsZero(ss, request.Key)
@@ -564,8 +565,9 @@ func deleteRequestFunc(ss *storageServer, deleteRequest *storagerpc.DeleteArgs, 
 	operationLockUntilIsFirst(ss, deleteRequest.Key, operationTime)
 
 	deleteFirstInChangeOrder(ss, deleteRequest.Key)
-
+	ss.lock.Lock()
 	delete(ss.clients, deleteRequest.Key)
+	ss.lock.Unlock()
 
 	operationLocksTmp.Unlock()
 
@@ -659,7 +661,7 @@ func sendRevokeLease(ss *storageServer, key string) {
 		go receiveAMessage(key, leaseTmp, chanTmp, timeNow)
 	}
 	for i := 0; i < revokeSize; i++ {
-		<- chanTmp
+		<-chanTmp
 	}
 	LOGF.Printf("revoke finish, key: {%s}", key)
 	ss.lock.Lock()
@@ -747,26 +749,26 @@ func isWrongServer(ss *storageServer, key string) bool {
 
 func addPutNumberForKey(ss *storageServer, key string) {
 	ss.lock.Lock()
-	ss.numberOfPut[key] ++
+	ss.numberOfPut[key]++
 	ss.lock.Unlock()
 }
 
 func addPutNumberForKeyForList(ss *storageServer, key string) {
 	ss.lock.Lock()
-	ss.numberOfPutForList[key] ++
+	ss.numberOfPutForList[key]++
 	ss.lock.Unlock()
 
 }
 
 func subPutNumberForKey(ss *storageServer, key string) {
 	ss.lock.Lock()
-	ss.numberOfPut[key] --
+	ss.numberOfPut[key]--
 	ss.lock.Unlock()
 }
 
 func subPutNumberForKeyForList(ss *storageServer, key string) {
 	ss.lock.Lock()
-	ss.numberOfPutForList[key] --
+	ss.numberOfPutForList[key]--
 	ss.lock.Unlock()
 }
 
@@ -846,7 +848,7 @@ func isFirstInChangeListOrder(ss *storageServer, key string, timeTmp time.Time) 
 	if timeTmp.Equal(ss.changeListOrder[key].Front().Value.(time.Time)) {
 		re = true
 	} else {
-		LOGF.Println("Front:", ss.changeListOrder[key].Front().Value.(time.Time), " myOperation: ",timeTmp)
+		LOGF.Println("Front:", ss.changeListOrder[key].Front().Value.(time.Time), " myOperation: ", timeTmp)
 	}
 	ss.lock.Unlock()
 	return re
@@ -884,25 +886,25 @@ func operationLockUntilIsFirstForList(ss *storageServer, key string, myOperation
 	}
 }
 
-func lockOperationLock (ss *storageServer, key string) {
+func lockOperationLock(ss *storageServer, key string) {
 	ss.lock.Lock()
 	ss.operationLocks[key].Lock()
 	ss.lock.Unlock()
 }
 
-func unLockOperationLock (ss *storageServer, key string) {
+func unLockOperationLock(ss *storageServer, key string) {
 	ss.lock.Lock()
 	ss.operationLocks[key].Unlock()
 	ss.lock.Unlock()
 }
 
-func lockOperationLockForList (ss *storageServer, key string) {
+func lockOperationLockForList(ss *storageServer, key string) {
 	ss.lock.Lock()
 	ss.operationLocks[key].Lock()
 	ss.lock.Unlock()
 }
 
-func unLockOperationLockForList (ss *storageServer, key string) {
+func unLockOperationLockForList(ss *storageServer, key string) {
 	ss.lock.Lock()
 	ss.operationLocksForList[key].Unlock()
 	ss.lock.Unlock()
